@@ -1,0 +1,12 @@
+node_modules/
+dist/
+
+# Screenshot review artefacts. Regenerate with tools/capture.mjs and
+# tools/shoot-creature.mjs; they are outputs, not sources.
+shots/
+
+# Throwaway debug probes.
+.tmp-*
+.vegstats/
+tools/tmp/
+tools/.labtmp/

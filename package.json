@@ -1,0 +1,23 @@
+{
+  "name": "pallet-town-3d",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Pallet Town \u2014 first-person, modern 3D cartoon reimagining of Pokemon LeafGreen",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --import ./tests/ts-resolver.mjs --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.1",
+    "playwright": "^1.62.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.5"
+  }
+}
