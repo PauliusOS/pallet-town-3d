@@ -108,3 +108,17 @@ The same build always produces the same town, which is what makes screenshot rev
 Budget at `high` quality is 60fps at 1600×900, ≤ 260 draw calls, ≤ 2.2M triangles. Anything drawn
 more than eight times is an `InstancedMesh`. The engine trims pixel ratio before it touches any
 visual feature, so the art direction survives on weaker hardware.
+
+## Contributing
+
+Pull requests are welcome — see `CONTRIBUTING.md` for the workflow and for the handful of rules
+(no binary assets, no `Math.random()`, one tone-map, one lighting rig) that keep the project
+coherent.
+
+## Licence
+
+MIT — see `LICENSE`.
+
+Pokémon is a trademark of Nintendo, Creatures Inc. and Game Freak. This is an unofficial fan
+project, built from scratch and shipping none of their assets. It is not affiliated with or
+endorsed by any of them.
