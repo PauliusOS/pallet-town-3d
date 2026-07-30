@@ -38,7 +38,8 @@ tools/           headless capture harnesses used for visual review
 ```
 
 `ART_DIRECTION.md` is the art bible. It is the reason a scene assembled by many hands still reads
-as one place, and it takes precedence over individual taste.
+as one place, and it takes precedence over individual taste. `PROMPT.md` is the single message the
+whole project was built from.
 
 ## How it renders
 
