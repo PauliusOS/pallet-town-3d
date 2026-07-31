@@ -3,6 +3,9 @@
 A first-person, modern-3D-cartoon reimagining of the opening of Pokémon LeafGreen — the town, and
 the choice of a first partner Pokémon — built in Three.js.
 
+**Play it: [pallet-town-3d-one.vercel.app](https://pallet-town-3d-one.vercel.app)** — first load
+builds the whole world in the browser and takes around 20 seconds.
+
 Everything you see is generated in code. The project ships **no binary art assets**: every texture
 is baked procedurally at load time, every model is sculpted from signed-distance fields and
 marching cubes, and every sound is synthesised in WebAudio.

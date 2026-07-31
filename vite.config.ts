@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
 /**
@@ -11,6 +12,19 @@ import { defineConfig } from 'vite';
  * usual suspects have to be repeated here or the watcher walks node_modules.
  */
 export default defineConfig({
+  /**
+   * The creature turntable at `/viewer.html` is a second entry point. Vite only
+   * builds `index.html` unless the others are named, so without this the
+   * turntable works under `npm run dev` and 404s everywhere else.
+   */
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        viewer: fileURLToPath(new URL('./viewer.html', import.meta.url)),
+      },
+    },
+  },
   server: {
     watch: {
       ignored: [

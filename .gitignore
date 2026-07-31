@@ -10,3 +10,5 @@ shots/
 .vegstats/
 tools/tmp/
 tools/.labtmp/
+.vercel
+.env*
