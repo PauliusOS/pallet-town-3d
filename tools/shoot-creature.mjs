@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const args = { out: 'shots/creatures', width: 1000, height: 1000, url: 'http://127.0.0.1:5173/viewer.html', bg: 'studio' };
-let subjects = ['bulbasaur', 'charmander', 'squirtle', 'pokeball', 'pokeball_open', 'all'];
+let subjects = ['bulbasaur', 'charmander', 'squirtle', 'pidgey', 'rattata', 'pokeball', 'pokeball_open', 'all'];
 let angles = ['front', 'three_quarter', 'side', 'back'];
 
 for (let i = 2; i < process.argv.length; i++) {

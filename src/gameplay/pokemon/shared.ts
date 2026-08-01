@@ -13,8 +13,19 @@ import { makeRng, clamp } from '../../core/Noise';
 
 export type StarterId = 'bulbasaur' | 'charmander' | 'squirtle';
 
+/** Every buildable species — the three starters plus the Route 1 wild fauna. */
+export type SpeciesId = StarterId | 'pidgey' | 'rattata';
+
+export const SPECIES: Record<SpeciesId, { name: string; types: string[] }> = {
+  bulbasaur: { name: 'Bulbasaur', types: ['Grass', 'Poison'] },
+  charmander: { name: 'Charmander', types: ['Fire'] },
+  squirtle: { name: 'Squirtle', types: ['Water'] },
+  pidgey: { name: 'Pidgey', types: ['Normal', 'Flying'] },
+  rattata: { name: 'Rattata', types: ['Normal'] },
+};
+
 export interface Creature {
-  readonly id: StarterId;
+  readonly id: SpeciesId;
   readonly name: string;
   readonly group: THREE.Group;
   update(dt: number, elapsed: number): void;

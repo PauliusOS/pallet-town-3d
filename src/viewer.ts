@@ -4,7 +4,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { buildStarter, buildPokeBall, STARTERS, type Creature } from './gameplay/Pokemon';
+import { buildCreature, buildPokeBall, STARTERS, type Creature, type SpeciesId } from './gameplay/Pokemon';
 
 /**
  * Creature turntable.
@@ -92,8 +92,8 @@ const balls: ReturnType<typeof buildPokeBall>[] = [];
 const root = new THREE.Group();
 scene.add(root);
 
-function addCreature(id: 'bulbasaur' | 'charmander' | 'squirtle', x: number): void {
-  const c = buildStarter(id);
+function addCreature(id: SpeciesId, x: number): void {
+  const c = buildCreature(id);
   c.group.position.x = x;
   c.attention = 0.5;
   root.add(c.group);
@@ -121,7 +121,7 @@ if (subject === 'all') {
   balls.push(b);
   frameRadius = 0.09;
 } else {
-  addCreature(subject as 'bulbasaur', 0);
+  addCreature(subject as SpeciesId, 0);
   // Frame each creature to its own measured height.
   const box = new THREE.Box3().setFromObject(creatures[0].group);
   frameRadius = Math.max(box.max.y - box.min.y, box.max.x - box.min.x) * 0.72;
