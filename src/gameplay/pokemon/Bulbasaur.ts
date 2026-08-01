@@ -2,21 +2,19 @@ import * as THREE from 'three';
 import { metaSurface, noiseDisplace, bakeCavityAO, type Ball } from '../../fx/Sculpt';
 import { creatureSkin } from '../../fx/CreatureMaterials';
 import { clamp, smoothstep, Simplex } from '../../core/Noise';
-import { createRig, IdleAnimator, addEye, finishBody, disposeCreature, type Creature } from './shared';
+import { createRig, IdleAnimator, finishBody, disposeCreature, type Creature } from './shared';
 
 /**
- * Bulbasaur — a squat quadruped with a tight, waxy bud rooted into its back.
+ * Bulbasaur — a squat quadruped with a tall onion bulb rooted into its back.
  *
- * The silhouette reads "low, wide, patient": the body is longer than it is
- * tall, the legs are stubby, and the bud is heavy enough to visually anchor
- * the hips. Everything above the shoulders is deliberately oversized — head
- * and especially eyes — because a quadruped whose head matches its body reads
- * as an animal, and this has to read as a character.
+ * Proportions are matched against the Pokemon HOME 3D render: the animal is
+ * LOW — belly slung close to the ground on stubby legs — with a head nearly as
+ * wide as the ribcage, and the bulb is the tallest thing in the silhouette,
+ * a pointed garlic-dome rising well above the head line.
  *
- * Two things carry the character's identity and both are treated as
- * first-class modelling problems rather than surface polish: the dark
- * blue-green spots across the flanks and haunches, and the closed bud. Get
- * either wrong and the render is a generic green frog.
+ * Three things carry the identity: the big red eyes (red iris filling the eye,
+ * fat black pupil, white sclera at the inner corner), the crisp dark dapples,
+ * and the bulb. Each is treated as a first-class modelling problem.
  */
 
 /* ------------------------------------------------------------------ */
@@ -56,28 +54,14 @@ function fbm3(s: Simplex, x: number, y: number, z: number, octaves = 3): number 
 /**
  * One marking, defined as a *projected* ellipse rather than a solid.
  *
- * The obvious implementation — an ellipsoid of pigment in model space — does
- * not work on a metaball body, and failing at it silently is why the previous
- * two passes shipped with invisible spots. The surface of a fused metaball
- * sculpt sits a long way outside the nominal ball radii (the Wyvill iso
- * crosses at roughly 1.06r for a lone ball and much further where several
- * blend), so a hand-placed ellipsoid that looks correct against the ball
- * coordinates is usually buried entirely inside the skin, and the mesh never
- * passes through it. It paints nothing, from every angle.
- *
- * Projecting instead removes the radial axis from the test altogether: a
- * flank spot is a disc in (y, z) that extends however far out it needs to in
- * x, gated by the surface normal so it only lands on the side it belongs to.
- * The mark then lies wherever the skin actually is.
+ * An ellipsoid of pigment in model space does not work on a metaball body:
+ * the Wyvill iso crosses well outside the nominal ball radii, so a hand-placed
+ * solid is usually buried entirely inside the skin and paints nothing.
+ * Projecting removes the radial axis from the test: a flank spot is a disc in
+ * (y, z) extended along x, gated by the surface normal so it lands only on the
+ * side it belongs to.
  */
 interface Spot {
-  /**
-   * Which axis the ellipse is projected along, and from which side.
-   * 'z' exists purely for the dead-ahead view: a flank spot's facing gate
-   * collapses to almost nothing on surfaces whose normal points at the camera,
-   * so front-of-chest and front-of-leg markings have to be projected along the
-   * view axis or they simply do not appear in the front render.
-   */
   axis: 'x' | 'y' | 'z';
   /** Direction along that axis the marked surface faces: +1 or -1. */
   face: number;
@@ -89,18 +73,9 @@ interface Spot {
 }
 
 /**
- * Paints the spots.
- *
- * An earlier pass cut the markings out of a noise field, which is what a real
- * animal's dappling looks like — and at viewing distance it averaged out to
- * one flat green with some grubbiness on it. Bulbasaur's spots are *drawn*
- * shapes: a countable number of large dark ellipses in specific places. So
- * they are authored as an explicit list and only *edge*-warped by noise,
- * which keeps the border organic while the shape stays a shape.
- *
- * The value step is deliberately large. Vertex colour is multiplied by the
- * cavity-AO pass and then washed out again by wrap lighting and the sky
- * probe, so a marking that looks correct as a number is invisible as a pixel.
+ * Paints the spots. Bulbasaur's dapples are *drawn* shapes: a countable number
+ * of large dark ellipses in specific places, with crisp edges — so they are
+ * authored as an explicit list and only edge-warped slightly by noise.
  */
 function paintSpots(
   geo: THREE.BufferGeometry,
@@ -113,10 +88,10 @@ function paintSpots(
   const nor = geo.attributes.normal as THREE.BufferAttribute;
   const col = geo.attributes.color as THREE.BufferAttribute;
   const s = new Simplex(opts.seed);
-  const warp = opts.warp ?? 0.011;
-  // Where the falloff starts, as a fraction of the ellipse radius. A tight
-  // band gives a soft-but-readable border; a wide one turns back into haze.
-  const feather = opts.feather ?? 0.74;
+  const warp = opts.warp ?? 0.005;
+  // Where the falloff starts, as a fraction of the ellipse radius. High value
+  // = crisp edge. The HOME model's patches are near-hard-edged.
+  const feather = opts.feather ?? 0.88;
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
@@ -126,26 +101,19 @@ function paintSpots(
     const ny = nor.getY(i);
     const nz = nor.getZ(i);
 
-    // Two independent warps so the border wobbles and never betrays the
-    // underlying ellipse.
     const w0 = fbm3(s, x * 11 + 3.1, y * 11 - 1.7, z * 11 + 6.4, 2) * warp;
     const w1 = fbm3(s, x * 11 - 5.2, y * 11 + 2.3, z * 11 - 0.9, 2) * warp;
 
     let mask = 0;
     for (const sp of spots) {
-      // Only the surface facing the projection direction is eligible, with a
-      // soft cutoff so the mark fades as the skin turns away instead of
-      // ending on a hard terminator.
-      // The x-axis gate is deliberately generous: a strict side-facing test
-      // puts every marking on the flanks and leaves the front view a plain
-      // green bean, because from dead ahead almost nothing has a sideways
-      // normal. Letting the mark carry round onto surfaces that face mostly
-      // forward is what makes the spots readable from every angle.
+      // Near-binary facing gate. A wide gradient here smears every patch into
+      // a washy streak wherever the surface curves; the HOME patches are FLAT
+      // stencils, so the gate is a cut, not a ramp.
       const facing = sp.axis === 'x'
-        ? smoothstep(-0.06, 0.24, nx * sp.face)
+        ? smoothstep(0.0, 0.14, nx * sp.face)
         : sp.axis === 'y'
-          ? smoothstep(-0.10, 0.34, ny * sp.face)
-          : smoothstep(-0.04, 0.30, nz * sp.face);
+          ? smoothstep(0.0, 0.16, ny * sp.face)
+          : smoothstep(-0.06, 0.08, nz * sp.face);
       if (facing <= 0) continue;
       const du = ((sp.axis === 'x' ? y : x) + w0 - sp.u) / sp.ru;
       const dv = ((sp.axis === 'z' ? y : z) + w1 - sp.v) / sp.rv;
@@ -153,8 +121,10 @@ function paintSpots(
       if (d >= 1) continue;
       mask = Math.max(mask, smoothstep(1.0, feather, d) * facing);
     }
-    // Nothing on the underside: the belly is the pale countershaded surface
-    // and a spot down there just reads as dirt.
+    // Harden the combined mask: whatever gradient survives the gates becomes
+    // a crisp edge instead of a fade.
+    mask = smoothstep(0.14, 0.68, mask);
+    // Nothing on the underside: the belly is the pale countershaded surface.
     mask *= smoothstep(-0.62, -0.20, ny);
 
     let r = col.getX(i);
@@ -183,12 +153,8 @@ function bothSides(spots: Omit<Spot, 'axis' | 'face'>[]): Spot[] {
 }
 
 /**
- * Darkens a collar of skin around the bud's foot.
- *
- * A bud that simply intersects the back is a prop resting on an animal. Two
- * things sell it as *growing out of* the back: skin that swells up around the
- * foot (metaballs, below) and a ring of shadow in the seam, which is what the
- * eye actually reads as "this goes in there".
+ * Darkens a collar of skin around the bulb's foot — the ring of shadow in the
+ * seam is what the eye reads as "this grows out of there".
  */
 function paintCollar(
   geo: THREE.BufferGeometry,
@@ -207,7 +173,6 @@ function paintCollar(
     const dz = pos.getZ(i) - cz;
     const d = Math.sqrt(dx * dx + dz * dz);
     if (d > outer) continue;
-    // Only the upward-facing back, and darkest right in the seam.
     const up = smoothstep(0.05, 0.55, nor.getY(i));
     const k = 1 - amount * smoothstep(outer, inner, d) * up;
     if (k < 1) col.setXYZ(i, col.getX(i) * k, col.getY(i) * k, col.getZ(i) * k);
@@ -216,264 +181,181 @@ function paintCollar(
 }
 
 /**
- * The bud's core: a turgid, closed egg.
+ * The bulb: a tall onion/garlic dome built as a lathe.
  *
- * This is the volume the scales are lapped over, and its only jobs are to be
- * convex — so no camera angle can ever find a cavity between the scales — and
- * to draw in to a soft point at the crown. Flutes are deliberately almost
- * absent; the plate read comes from the real, thick scales wrapped around it,
- * not from ridges pressed into a sphere, which is what made the previous pass
- * look like a cabbage.
+ * This is the signature element and the previous metaball/scale approach kept
+ * collapsing into either a cabbage or a helmet. A lathe profile gives direct
+ * authorship of the silhouette: fat shoulders low down, a long concave ogee
+ * up to a distinct pointed tip. Garlic-clove character comes from four soft
+ * crease valleys converging on the tip, and a slight sideways lean at the very
+ * top so the point reads organic rather than machined.
  */
-function budCoreGeometry(R: number, segsU = 36, segsV = 24): THREE.BufferGeometry {
-  const geo = new THREE.SphereGeometry(R, segsU, segsV);
-  const pos = geo.attributes.position as THREE.BufferAttribute;
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const lat = clamp(v.y / R, -1, 1);
-    const theta = Math.atan2(v.z, v.x);
-    const crown = smoothstep(0.10, 1.0, lat);
-    const foot = smoothstep(-0.35, -1.0, lat);
-    // Egg, drawn in at the crown, tucked at the foot so it sinks into its seam.
-    // Only lightly drawn in at the crown. At 0.34, combined with a y-stretch,
-    // the core came to a point and the whole bud read as an onion dome — a
-    // closed bud is a fat rounded volume with a soft apex, not a cone.
-    let radial = (1 - 0.19 * crown * crown) * (1 - 0.22 * foot);
-    // A whisper of five-fold swell so the core agrees with the scale count.
-    radial += 0.016 * Math.cos(theta * 5) * (1 - crown);
-    v.x *= radial;
-    v.z *= radial;
-    v.y = v.y * (1.0 + 0.10 * crown);
-    pos.setXYZ(i, v.x, v.y, v.z);
+function onionBulbGeometry(R: number, H: number): THREE.BufferGeometry {
+  // Silhouette profile, foot (t=0) to tip (t=1).
+  const profile = (t: number): number => {
+    // Rounded belly that peaks around a third of the way up. The foot pulls
+    // IN — a flared foot leaves the bulb's widest edge hovering above the
+    // back with a shadow slot underneath, and it reads as a dollop.
+    const belly = Math.sin(Math.PI * (0.28 + t * 0.72)) ** 0.9;
+    // ...crossfaded into a concave taper that pulls in to the point.
+    const taper = Math.pow(1 - t, 1.55);
+    const k = smoothstep(0.30, 0.85, t);
+    let r = belly * (1 - k) + taper * 1.05 * k;
+    // Keep a slender neck just under the tip so the point is a point.
+    return Math.max(r, 0.02);
+  };
+
+  const SEG_U = 48; // around
+  const SEG_V = 40; // along
+  const pts: THREE.Vector2[] = [];
+  for (let i = 0; i <= SEG_V; i++) {
+    const t = i / SEG_V;
+    pts.push(new THREE.Vector2(Math.max(0.001, R * profile(t)), t * H));
   }
-  noiseDisplace(geo, 0.0014, 14, 91, 2);
+  const geo = new THREE.LatheGeometry(pts, SEG_U);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const n = pos.count;
+  const colors = new Float32Array(n * 3);
+
+  const v = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    v.fromBufferAttribute(pos, i);
+    const t = clamp(v.y / H, 0, 1);
+    const theta = Math.atan2(v.z, v.x);
+    // Three distinct clove creases: narrow Gaussian valleys pinched into the
+    // surface, converging toward the tip. A uniform lobed pinch reads as a
+    // smooth kiss; a few separated valleys read as garlic.
+    const creaseWindow = smoothstep(0.04, 0.20, t) * (1 - smoothstep(0.62, 0.86, t));
+    let valley = 0;
+    for (const ca of [0.9, 3.0, 5.1]) {
+      let d = Math.abs(theta - ca);
+      d = Math.min(d, Math.PI * 2 - d);
+      valley = Math.max(valley, Math.exp(-((d / 0.24) ** 2)));
+    }
+    const pinch = 1 - 0.095 * valley * creaseWindow;
+    v.x *= pinch;
+    v.z *= pinch;
+    // Lean the top of the dome slightly so the tip curls off-axis.
+    const lean = smoothstep(0.55, 1.0, t);
+    v.x += R * 0.09 * lean * lean;
+    v.z -= R * 0.06 * lean * lean;
+    pos.setXYZ(i, v.x, v.y, v.z);
+
+    // Vertex colour: crease valleys darker, tip slightly lighter, foot darker.
+    let c = 1 - 0.20 * valley * creaseWindow;
+    c *= 0.92 + 0.08 * smoothstep(0.0, 0.5, t);
+    colors[i * 3] = c;
+    colors[i * 3 + 1] = c;
+    colors[i * 3 + 2] = c;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  noiseDisplace(geo, 0.0010, 9, 47, 2);
   geo.computeVertexNormals();
   return geo;
 }
 
 /**
- * One bud scale: a thick, broad, rounded plate.
- *
- * The critical property is that it is a *solid* — a closed convex lens with
- * real thickness in the middle and a rounded margin — rather than a card. A
- * card has a zero-thickness edge that reads as a floppy leaf from every
- * grazing angle, and that single decision is the difference between a closed
- * bud and a lettuce. Local space: length along +y from root, width on x,
- * thickness on z, with the plate cupped so it hugs the core it wraps.
+ * One base wrap leaf: a FLAT, wide, gently-curved triangular blade. It hugs
+ * the bulb's lower flank (cupped across its width to wrap the dome, bowed
+ * along its length to follow the dome's taper) and its tip peels slightly
+ * outward. Built as a squashed lens so the edge has a whisper of thickness —
+ * but the thickness stays a fraction of the width everywhere, so no view can
+ * read it as a tube or a pipe.
+ * Local space: length along +y from root, width on x, outward on +z.
  */
-function budScaleGeometry(halfW: number, len: number, thick: number, cup: number): THREE.BufferGeometry {
-  // 12x8 left visible facets along every scale's margin, and since the scales
-  // form the bud's silhouette that faceting read as an artichoke. The bulb is
-  // this character's single most identifying feature and it sits at the top of
-  // the silhouette, so it earns the extra few thousand triangles.
-  const geo = new THREE.SphereGeometry(1, 20, 13);
+function wrapLeafGeometry(halfW: number, len: number, thick: number, domeR: number): THREE.BufferGeometry {
+  const geo = new THREE.SphereGeometry(1, 20, 12);
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i);
     const u = clamp((v.y + 1) / 2, 0, 1); // 0 root, 1 tip
-    // A sphere used raw tapers to a pole at each end, and a pole on a scale is
-    // a SPIKE — six or seven of them ringing a bud is precisely the artichoke
-    // silhouette the previous pass shipped. Re-profiling the sphere's sine
-    // cross-section with a fractional power makes the plate carry most of its
-    // width and thickness all the way to a rounded margin, so it ends in a
-    // blunt fingernail instead of a thorn.
-    const rr = Math.hypot(v.x, v.z);
-    const broad = rr > 1e-4 ? Math.min(2.4, Math.pow(rr, 0.42) / rr) : 0;
-    const nar = 1 - 0.30 * smoothstep(0.62, 1.0, u);
-    const th = thick * (1 - 0.32 * smoothstep(0.60, 1.0, u));
-    const x = v.x * broad * halfW * nar;
-    const z = v.z * broad * th;
-    // The quadratic is an ogee, not a bend: the plate bulges outward through
-    // its middle (giving the bud its shoulders) and curls back INWARD over the
-    // crown, which is what closes the silhouette to a dome.
-    pos.setXYZ(i, x, u * len, z - cup * (u - 0.35) * (u - 0.35) * len + cup * 0.12 * len);
+    // Normalise the sphere's circular cross-section to a unit square so the
+    // plan shape is authored directly.
+    const s = Math.max(1e-3, Math.sqrt(Math.max(0, 1 - (2 * u - 1) ** 2)));
+    const ux = v.x / s; // -1..1 across the width
+    const uz = v.z / s; // -1..1 through the thickness
+    // Triangular plan: full width across the root third, tapering to a point.
+    const w = halfW * (1 - 0.96 * smoothstep(0.16, 0.98, u));
+    // Thin. Fades to a soft edge at the rim and tapers toward the tip.
+    const th = thick * (1 - 0.55 * u) * (1 - 0.72 * ux * ux) * s;
+    const x = ux * w;
+    // Cup across the width so the blade wraps the dome's circumference...
+    const cup = -(x * x) / (2 * domeR);
+    // ...bow gently inward along the length to sit against the dome...
+    const hug = -0.12 * len * u * u;
+    // ...and ease the tip outward-down, a droop rather than a flick.
+    const peel = 0.20 * len * smoothstep(0.35, 1.0, u) ** 2;
+    pos.setXYZ(i, x, u * len, uz * th + cup + hug + peel);
   }
   geo.computeVertexNormals();
-  return geo;
+  return ensureVertexColor(geo);
 }
 
 /**
- * Shades a scale from root to tip in vertex colour.
+ * Bulbasaur's eye, built as a layered 3D eyeball.
  *
- * The plates of a closed bud only separate because the light falls off into
- * each lap. Baking that into the mesh rather than relying on the lighting is
- * what keeps the courses readable when the bud is turned away from the key.
+ * The official design: a tall rounded-triangle eye, dark outline, red iris
+ * filling most of the aperture, a fat black pupil, one white catchlight, and
+ * a sliver of white sclera at the INNER corner. Layered spherical caps give
+ * exactly that: dark base sphere (reads as the drawn outline ring), white
+ * sclera cap, red iris cap tilted toward the outer corner (which uncovers the
+ * white on the inner side), black pupil cap concentric with the iris.
+ *
+ * Everything is MeshBasic: a lit iris at this scale speckles under the normal
+ * map + env probe and reads bloodshot. Unlit flats are how the character is
+ * drawn, and how the HOME model is toon-shaded.
  */
-function shadeScale(geo: THREE.BufferGeometry, len: number, root: number, tip: number): THREE.BufferGeometry {
-  const pos = geo.attributes.position as THREE.BufferAttribute;
-  const n = pos.count;
-  const c = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const t = clamp(pos.getY(i) / len, 0, 1);
-    const k = root + (tip - root) * Math.pow(t, 0.75);
-    c[i * 3] = k;
-    c[i * 3 + 1] = k;
-    c[i * 3 + 2] = k;
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
-  return geo;
-}
-
-/**
- * The bud, assembled.
- *
- * A closed bud is not a flower with the petals shut — it is a *solid* wrapped
- * in laps. So the shape is built from the inside out: a convex egg that no
- * camera can ever see a cavity in, then two staggered whorls of thick scales
- * lapped over it, each one curling its tip back INWARD over the crown so the
- * silhouette closes to a soft point. Every scale tip therefore sits above the
- * core it covers and below the whorl inside it, which is what makes the thing
- * read as turgid and packed rather than as a rosette of leaves.
- *
- * Local origin is the bud's foot, so the caller can bury it in the back.
- */
-function budAssembly(R: number, mat: THREE.Material, deepMat: THREE.Material): THREE.Group {
-  const g = new THREE.Group();
-
-  // The core is the hidden volume that guarantees no camera finds a cavity — it
-  // is NOT the visible surface, and sizing it as if it were is what erased the
-  // scales: at R*0.94 it swelled straight through the whorls and the bud
-  // rendered as one smooth egg. It has to stay comfortably inside the plates
-  // that wrap it, close enough to back them and far enough not to become them.
-  // Sizing the core is the whole ballgame and the last two passes both got it
-  // wrong in opposite directions. Too big and it swallows the plates (one smooth
-  // egg); too tall and it stands ABOVE where the scale tips converge, so the
-  // scales end up splayed around its waist like a collar of petals and the bud
-  // reads as an open artichoke — which is exactly what the side render showed.
-  // The core must be strictly *inside* the envelope the plates describe: below
-  // their convergence point (~1.25R) and narrower than their mid-course radius
-  // (~0.72R). At 0.52R centred at 0.52R it tops out at 1.09R and never shows.
-  const core = new THREE.Mesh(budCoreGeometry(R * 0.56, 22, 14), mat);
-  core.position.y = R * 0.50;
-  bakeCavityAO(core.geometry, new THREE.Vector3(0, 0, 0), 0.18);
-  core.castShadow = true;
-  core.receiveShadow = true;
-  g.add(core);
-
-  // Outer whorl: broad, low, leaning out — this is the course that gives the
-  // bud its shoulders and hides the seam with the back.
-  // Root-to-tip value range widened. The laps only separate because each plate
-  // darkens into the one it overlaps; with the range this narrow the whole bud
-  // averaged out to a single smooth dome and the scale read disappeared.
-  const outerGeo = shadeScale(budScaleGeometry(R * 0.52, R * 0.86, R * 0.20, 0.95), R * 0.86, 0.44, 1.12);
-  // Inner whorl: narrower, steeper, staggered half a step so no gap lines up.
-  const innerGeo = shadeScale(budScaleGeometry(R * 0.46, R * 0.72, R * 0.18, 1.15), R * 0.72, 0.50, 1.14);
-  // Crown: broad blunt caps that close the very top. These were long and narrow
-  // and stood almost upright, so they broke the silhouette as three spikes and
-  // turned the bud into an artichoke. Short, wide and blunt instead: the crown
-  // has to read as the last lap closing over, not as a set of points.
-  const crownGeo = shadeScale(budScaleGeometry(R * 0.32, R * 0.44, R * 0.16, 1.5), R * 0.44, 0.58, 1.10);
-
-  const whorl = (
-    geo: THREE.BufferGeometry, m: THREE.Material, count: number,
-    phase: number, radius: number, yRoot: number, tilt: number,
-  ) => {
-    for (let i = 0; i < count; i++) {
-      const a = phase + (i / count) * Math.PI * 2;
-      const pivot = new THREE.Group();
-      pivot.rotation.y = a;
-      const s = new THREE.Mesh(geo, m);
-      s.position.set(0, yRoot, radius);
-      s.rotation.x = tilt;
-      s.castShadow = true;
-      s.receiveShadow = true;
-      pivot.add(s);
-      g.add(pivot);
-    }
-  };
-
-  // Tilts are DRASTICALLY reduced from the previous pass (0.60/0.34 rad). Those
-  // leaned the plates outward, and once the group's vertical squash was applied
-  // on top they lay down into a flat rosette. A closed bud's plates stand almost
-  // upright and do their wrapping with the ogee, not with the mount angle: each
-  // course now rises steeply and curls its tip back over the axis, so every tip
-  // sits above the core it covers and under the whorl inside it.
-  //
-  // Roots sit low (R*0.04) so the body's collar closes over them — a root that
-  // floats above the seam leaves a slot that reads from the side as a hollow.
-  //
-  // The three courses are STAGGERED in height on purpose. When all three
-  // converged on the same apex the bud closed correctly but every lap merged
-  // into one smooth lime dome — closed, and completely characterless. Ending
-  // each course a clear step below the next leaves its rounded margin exposed
-  // as a visible lapped edge partway up the flank, which is what makes the
-  // volume read as packed plates rather than as a helmet.
-  whorl(outerGeo, deepMat, 6, 0.0, R * 0.46, R * 0.04, 0.42);
-  whorl(innerGeo, mat, 5, Math.PI / 5, R * 0.34, R * 0.44, 0.26);
-  // Three broad crown plates whose tips cross the axis, lapping over one another
-  // so the apex is solid skin from directly above. This is the guarantee that no
-  // camera anywhere finds a cavity down the middle of the bud.
-  whorl(crownGeo, mat, 3, Math.PI / 3, R * 0.13, R * 0.86, 0.14);
-
-  return g;
-}
-
-/**
- * Bulbasaur's eye, built locally.
- *
- * The shared makeEye is authored for a hero close-up: a bright white sclera,
- * a glossy clearcoat and a two-catchlight setup. On a small character that
- * combination is exactly the bug-eyed read — a white ball with a red ring on
- * it, wet-looking, and speckled wherever the environment probe lands. What
- * Bulbasaur actually has is a flat crimson eye with a fat black pupil and one
- * hard specular dot, and no visible sclera at all. So the whole eyeball is the
- * iris: one solid, near-matte crimson sphere.
- */
-function bulbaEye(r: number): THREE.Group {
+function bulbaEye(r: number, sgn: number): THREE.Group {
   const g = new THREE.Group();
   g.name = 'Eye';
-  // Flat, unlit crimson. A lit iris on a small eye is what produced the
-  // speckle: the normal map, the environment probe and the wrap term all land
-  // on a strongly curved surface at once, and the result is mottling that reads
-  // as a bloodshot sclera. MeshBasic has no normal to speckle and no probe to
-  // sample, so the iris is exactly the one colour it was authored as. The only
-  // light on the whole eye is the single catchlight, which is also the only
-  // light a drawn Pokemon eye has.
-  // Deepened from a bright crimson: unlit full-saturation red against the dark
-  // green face read as self-illuminated, which is what made the face look
-  // demonic rather than friendly. A darker iris sits in the head instead of
-  // glowing out of it.
-  const irisMat = new THREE.MeshBasicMaterial({ color: 0x9c2130 });
-  const ball = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), irisMat);
-  g.add(ball);
 
-  // No limbal ring here, deliberately. One was tried: on an eye this small,
-  // seated this deep, the ring occupies most of the visible aperture and reads
-  // as heavy eyeliner around a black almond — considerably worse than the plain
-  // crimson it was meant to seat. The socket rim already supplies the boundary.
+  const cap = (radius: number, theta: number, color: number, tiltX: number, tiltY: number) => {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 28, 16, 0, Math.PI * 2, 0, theta),
+      new THREE.MeshBasicMaterial({ color }),
+    );
+    m.rotation.order = 'YXZ';
+    m.rotation.x = Math.PI / 2 + tiltX;
+    m.rotation.y = tiltY;
+    return m;
+  };
 
-  // The pupil. Sized against the *visible aperture*, not against the eyeball:
-  // the ball is seated deep enough that the socket rim eats the outer third of
-  // it, so a pupil that looks correctly proportioned on the sphere in isolation
-  // swallows everything that actually shows and the eye renders as a black
-  // almond with a red sliver — which is what the previous pass did. At 0.46 the
-  // red reads as the colour of the eye and the black reads as a pupil inside
-  // it, which is the way the character is drawn.
-  // The pupil is a cap on a sphere, so it only reads as a round pupil while the
-  // socket aperture in front of it stays CONCENTRIC with it. The idle animator
-  // yaws the head up to 0.1 rad, and a cap buried deep behind a narrow aperture
-  // slides visibly off-centre under that rotation — which is why earlier passes
-  // rendered a black wedge in one corner with a red crescent opposite, reading as
-  // a sidelong, faintly sinister glance. The cure is clearance, not size: the
-  // pupil is kept comfortably smaller than the visible cap (see the seat depth
-  // and socket strength below) so a full red annulus surrounds it from any angle
-  // the head actually reaches.
-  const pupil = new THREE.Mesh(
-    new THREE.SphereGeometry(r * 1.006, 18, 12, 0, Math.PI * 2, 0, Math.asin(0.56)),
-    new THREE.MeshBasicMaterial({ color: 0x180f12 }),
+  // Base: the dark outline. Whatever the socket rim doesn't cover of this
+  // sphere reads as the drawn contour around the eye.
+  const outline = new THREE.Mesh(
+    new THREE.SphereGeometry(r, 24, 16),
+    new THREE.MeshBasicMaterial({ color: 0x10262a }),
   );
-  pupil.rotation.x = Math.PI / 2;
-  g.add(pupil);
+  g.add(outline);
 
-  // One catchlight, up-left, on the pupil's edge. Small and crisp: a big soft
-  // one is a wet eye, and a wet eye on a cartoon face reads as frightened.
+  // Sclera: white, kept BARELY wider than the iris. Off-axis views (the
+  // three-quarter camera, the idle head yaw) parallax the layers apart, and
+  // whatever margin the sclera has beyond the iris smears into a white band
+  // on the near edge; a tight sclera means those angles reveal the dark
+  // outline instead, which is how the character is drawn.
+  g.add(cap(r * 1.012, 1.17, 0xf4fbfa, 0.06, -sgn * 0.10));
+  // Iris: red, filling most of the aperture, shifted a touch toward the OUTER
+  // corner so the white peeks through only as a wedge at the INNER corner.
+  // Tilt signs are EMPIRICAL, verified against renders: with this cap setup a
+  // negative tiltX raises the iris and -sgn*tiltY pushes it outward. (Two
+  // earlier rounds argued the algebra both ways and shipped a sleepy eye and
+  // an outer-white eye; trust the screenshots, not the rotation-order proof.)
+  // The iris is nearly as wide as the sclera: the visible white margin is
+  // what off-axis views smear into a white band, so it is kept to a sliver
+  // everywhere except the inner corner, where the tilt overshoot opens it
+  // into the drawn white wedge.
+  g.add(cap(r * 1.026, 1.15, 0xb0202c, 0.06, -sgn * 0.28));
+  // Pupil: fat and black, concentric with the iris.
+  g.add(cap(r * 1.040, 0.62, 0x0d0a10, 0.06, -sgn * 0.28));
+
+  // One catchlight, on the upper edge of the pupil. Crisp and small.
   const hi = new THREE.Mesh(
-    new THREE.SphereGeometry(r * 0.135, 8, 6),
+    new THREE.SphereGeometry(r * 0.14, 10, 8),
     new THREE.MeshBasicMaterial({ color: 0xffffff }),
   );
-  hi.position.set(-r * 0.24, r * 0.28, r * 0.955);
+  const hiDir = new THREE.Vector3(sgn * 0.20, 0.36, 0.91).normalize().multiplyScalar(r * 1.055);
+  hi.position.copy(hiDir);
   g.add(hi);
 
   g.traverse((o) => {
@@ -484,12 +366,8 @@ function bulbaEye(r: number): THREE.Group {
 }
 
 /**
- * The mouth line: a tube that tapers to nothing at both ends.
- *
- * A constant-radius tube has to be capped, and a cap on a dark line is a bead
- * of lip at each corner — which is what turned the last pass into a human
- * smirk. Tapering to zero tucks the corners into the cheek the way the
- * official design draws them.
+ * The mouth line: a tube that tapers to nothing at both ends, so the corners
+ * tuck into the cheeks instead of ending in beads.
  */
 function mouthLineGeometry(
   curve: THREE.Curve<THREE.Vector3>,
@@ -521,19 +399,92 @@ function mouthLineGeometry(
 }
 
 /**
- * Finds the frontmost point of a sculpted surface near a given (x, y).
+ * The open mouth: a shallow pink interior hung below the smile line.
  *
- * Face details — the mouth line, the nostril beads — are authored as explicit
- * coordinates, but the surface they have to sit on is the *output* of a
- * metaball solve, and the Wyvill iso crosses a long way outside the nominal
- * ball radii wherever several balls blend. So a coordinate that looks correct
- * against the ball positions is typically 2–3cm inside the finished skin, and
- * the detail renders as nothing at all: that is exactly how the last revision
- * lost the mouth and both nostrils off the front view while every number in the
- * file still looked sensible.
- *
- * Probing the meshed result removes the guesswork. Any change to the muzzle
- * balls now carries the face along with it instead of silently swallowing it.
+ * Built as a grid strip. Columns follow the smile curve; rows drop from the
+ * upper lip toward the chin, widest mid-mouth so the opening is a smiling
+ * lens, not a letterbox. Every vertex is re-seated against the sculpted skin
+ * (frontSurfaceZ) and bowed slightly INTO the head, so the pink reads as a
+ * cavity and the lower edge tucks under the surface instead of floating.
+ */
+function mouthInteriorGeometry(
+  upper: THREE.Vector3[],
+  headGeo: THREE.BufferGeometry,
+  drop: number,
+  recess: number,
+): THREE.BufferGeometry {
+  const curve = new THREE.CatmullRomCurve3(upper, false, 'catmullrom', 0.5);
+  const COLS = 28;
+  const ROWS = 6;
+  const positions = new Float32Array((COLS + 1) * (ROWS + 1) * 3);
+  const colors = new Float32Array((COLS + 1) * (ROWS + 1) * 3);
+  const idx: number[] = [];
+  const p = new THREE.Vector3();
+  for (let c = 0; c <= COLS; c++) {
+    const t = c / COLS;
+    curve.getPoint(t, p);
+    // How far this column opens: a thin CRESCENT. Height peaks mid-mouth and
+    // tapers to zero well BEFORE the corners (pink spans ~72% of the smile),
+    // and the peak is small, so the lower edge stays a near-parallel curve to
+    // the smile line instead of a bulging tongue-like blob.
+    const u = Math.min(Math.max((t - 0.12) / 0.76, 0), 1);
+    const span = Math.pow(Math.sin(Math.PI * u), 0.7);
+    for (let r = 0; r <= ROWS; r++) {
+      const f = r / ROWS;
+      const k = (c * (ROWS + 1) + r) * 3;
+      const x = p.x * (1 - 0.05 * f);
+      // Top row starts a hair BELOW the lip-line centre: the strip is
+      // recessed, and a slightly raised camera projects recessed points
+      // upward — without this bias the bright rows peek above the dark line.
+      const y = p.y - 0.0028 - drop * span * f;
+      // Small eps: a wide search ring reads the frontmost vertex of the
+      // UNCARVED rim and re-floats the strip proud of the pocket.
+      const zs = frontSurfaceZ(headGeo, x, y, 0.012);
+      const zSurf = Number.isFinite(zs) ? zs : p.z;
+      // The skin under the opening is CARVED (negative pocket balls below the
+      // lip line). The strip takes whichever is deeper: a floor recessed
+      // behind the LIP LINE (never proud of it), or a skim just above the
+      // local carved skin — and tucks under the skin at its own boundary
+      // (lower edge, corners) so no pink leaks past the ends of the lip line.
+      const edge = smoothstep(0.78, 1.0, f);
+      const pocket = (0.0030 + 0.0055 * Math.sin(Math.PI * f)) * (0.35 + 0.65 * span);
+      const zRecessed = p.z - pocket;
+      const zSkim = zSurf + recess * (1 - edge);
+      positions[k] = x;
+      positions[k + 1] = y;
+      positions[k + 2] = Math.min(zRecessed, zSkim)
+        - edge * 0.0040
+        - (1 - span) * 0.003;
+      // Cavity shading baked into vertex colour: a dark shadowed sliver just
+      // under the upper lip, opening out to the lit mouth floor below, and
+      // fading back to dark where the opening closes at the corners.
+      const lit = smoothstep(0.03, 0.28, f);
+      const cornerFade = smoothstep(0.05, 0.30, span);
+      const shade = 1 - Math.max(0.10 + 0.58 * (1 - lit), 0.60 * (1 - cornerFade));
+      colors[k] = shade;
+      colors[k + 1] = shade;
+      colors[k + 2] = shade;
+    }
+  }
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < ROWS; r++) {
+      const a = c * (ROWS + 1) + r;
+      const b = a + ROWS + 1;
+      idx.push(a, a + 1, b, b, a + 1, b + 1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Finds the frontmost point of a sculpted surface near a given (x, y), so face
+ * details land on the *meshed* skin rather than on guessed coordinates (the
+ * Wyvill iso crosses far outside the nominal ball radii wherever balls blend).
  */
 function frontSurfaceZ(geo: THREE.BufferGeometry, x: number, y: number, eps: number): number {
   const pos = geo.attributes.position as THREE.BufferAttribute;
@@ -556,7 +507,6 @@ function clawGeometry(radius: number, length: number): THREE.BufferGeometry {
   for (let i = 0; i < pos.count; i++) {
     const y = pos.getY(i) / radius; // -1..1
     const t = clamp((y + 1) / 2, 0, 1);
-    // Stretch along Y and pinch the tip to a point.
     const s = Math.pow(1 - t, 0.62);
     pos.setXYZ(i, pos.getX(i) * s, (y * 0.5 + 0.5) * length, pos.getZ(i) * s);
   }
@@ -568,18 +518,15 @@ export function buildBulbasaur(): Creature {
   const rig = createRig();
   rig.root.name = 'Bulbasaur';
 
-  // A cool, blue-leaning teal — not mint, and definitely not seafoam. The
-  // wrapped-diffuse term, the sky fill and the environment probe between them
-  // add roughly 60/255 to every channel and lift the render well above the
-  // albedo, so the albedo has to start deep and *saturated* or the result is
-  // a pastel. Hue sits at ~168°, on the blue side of green.
-  const SKIN = 0x08705e;
-  const SKIN_SUB = 0x0a5750;
+  // Pastel-leaning blue-green turquoise. The wrapped-diffuse term, sky fill
+  // and env probe lift the render above the albedo, but the HOME body is a
+  // genuinely LIGHT pastel — so the albedo starts brighter and a touch less
+  // saturated than a pure teal.
+  const SKIN = 0x26897b;
+  const SKIN_SUB = 0x186a5f;
 
   const skin = creatureSkin({
     color: SKIN,
-    // Scatter colour stays cool: a warm or pale scatter is what turns cartoon
-    // skin milky, and it is the fastest way to lose a saturated character.
     subsurface: SKIN_SUB,
     wrap: 0.11,
     rim: 0.05,
@@ -587,193 +534,114 @@ export function buildBulbasaur(): Creature {
     detail: 'pores',
     detailScale: 5,
   });
-  // Broad white speculars across the flanks are what desaturated the whole
-  // model to mint. Skin here is soft-matte with barely any surface gloss.
   skin.clearcoat = 0.03;
   skin.clearcoatRoughness = 0.75;
   skin.sheen = 0.04;
   skin.sheenColor = new THREE.Color(SKIN_SUB).multiplyScalar(0.3);
-  skin.normalScale.set(0.26, 0.26);
-  // The studio probe is what actually bleached this to mint: a broad, bright
-  // environment reflection sitting on top of every up-facing surface.
+  skin.normalScale.set(0.2, 0.2);
   skin.envMapIntensity = 0.22;
-  // The baked roughness map dips to 0.42 in places, and those dips are exactly
-  // the broad white streaks that were running down the flanks.
   skin.roughnessMap = null;
   skin.roughness = 0.88;
 
-  // The spot tint. Dark and *bluer* than the base — Bulbasaur's markings are
-  // not simply shadowed skin, they are a different, colder pigment.
-  // Strong enough to survive the wrap term, the sky fill and the cavity pass,
-  // all three of which lift and desaturate whatever is painted underneath. At
-  // 0.19/0.37/0.53 the markings rendered as grey smudges; a marking has to be
-  // authored roughly twice as dark as it should look.
-  // 0.10/0.25/0.40 was a marking authored to survive the lighting and it
-  // over-survived: at that depth the ellipses render as near-black camouflage
-  // patches, and where two of them touched they merged into one amoeba. Lifted
-  // to a value that still reads as a distinctly colder, darker pigment while
-  // staying inside the same family as the hide.
-  // Rendered, 0.26/0.44/0.55 came out as GREY cloud. Crushing green and blue
-  // together by that much removes the hue along with the value, and the eye reads
-  // the result as dirt or as a shadow rather than as pigment. The fix is to hold
-  // blue almost where the hide has it and take the value out of green alone:
-  // the mark then stays inside the same teal family while landing several steps
-  // darker and visibly cooler, which is what a Bulbasaur dapple actually is.
-  const SPOT: [number, number, number] = [0.46, 0.56, 0.82];
-  const BELLY: [number, number, number] = [1.20, 1.11, 1.02];
+  // The spot tint: flat grey-green patches, clearly darker than the hide but
+  // not black — the HOME patches sit about half a stop down from the skin.
+  const SPOT: [number, number, number] = [0.42, 0.57, 0.60];
+  const BELLY: [number, number, number] = [1.18, 1.10, 1.02];
 
   /* --- Body ---------------------------------------------------------- */
-  // Ground contact sits at y ≈ 0.010; the barrel is lifted clear of it so the
-  // animal has daylight underneath and reads as a quadruped, not a potato.
-  // Four legs, authored explicitly. The previous pass tucked them *inside* the
-  // barrel's half-width, so the metaball field fused them into the belly and
-  // from the front the whole animal was one bean with toes. A quadruped reads
-  // as a quadruped when the limbs stand OUTSIDE the ribcage and there is sky
-  // between them, so the barrel narrows and the legs move out under the
-  // shoulder and haunch masses that cap them.
+  // SQUAT. The HOME model's belly is slung close to the ground; leg length is
+  // maybe a fifth of body height and the ribcage is wide.
   const LEGS = [
-    { x: 0.134, z: 0.130 }, // fore
-    { x: 0.144, z: -0.178 }, // hind
+    { x: 0.128, z: 0.128 }, // fore
+    { x: 0.142, z: -0.175 }, // hind
   ];
   const bodyBalls: Ball[] = [
-    // Barrel: narrower than before on X, and long on Z. Low and wide is a
-    // proportion, not a volume — width comes from the shoulders and haunches.
-    { x: 0, y: 0.220, z: -0.030, r: 0.140, sx: 1.00, sy: 0.86, sz: 1.34 },
-    { x: 0, y: 0.220, z: 0.128, r: 0.106, sx: 1.00, sy: 0.92, sz: 0.94 },
-    { x: 0, y: 0.228, z: 0.196, r: 0.074, sx: 0.90, sy: 0.86 },
-    { x: 0, y: 0.212, z: -0.205, r: 0.122, sx: 1.00, sy: 1.00, sz: 0.94 },
-    // Belly: held high and pulled in, so there is daylight under the animal.
-    { x: 0, y: 0.176, z: -0.020, r: 0.084, sx: 0.94, sy: 0.50, sz: 1.14 },
-    // Shoulders and haunches — the two masses that give a quadruped its
-    // silhouette from the front, and the reason the legs read as legs.
-    { x: 0.126, y: 0.226, z: 0.112, r: 0.082, sx: 0.94, sy: 0.94, sz: 1.02 },
-    { x: -0.126, y: 0.226, z: 0.112, r: 0.082, sx: 0.94, sy: 0.94, sz: 1.02 },
-    { x: 0.138, y: 0.204, z: -0.176, r: 0.096, sx: 0.94, sy: 1.02, sz: 1.02 },
-    { x: -0.138, y: 0.204, z: -0.176, r: 0.096, sx: 0.94, sy: 1.02, sz: 1.02 },
-    // The back swells up into a collar around the bud's base so the skin
-    // visibly climbs its flank instead of the bud resting on the spine. Sits
-    // well behind the shoulders, where the bud now lives.
-    // Deliberately LOW and shallow. At y 0.282 / sy 0.62 this swell topped out
-    // around y 0.357 — which was above the bud's own foot, so the skin closed
-    // over the bottom 40% of the bud and the animal wore it like a bowl with
-    // petals sitting in it. A seam wants to swallow roughly a tenth of the bud,
-    // not half of it.
-    { x: 0, y: 0.270, z: -0.062, r: 0.102, sx: 1.20, sy: 0.56, sz: 1.08 },
-    { x: 0.060, y: 0.256, z: -0.058, r: 0.066 },
-    { x: -0.060, y: 0.256, z: -0.058, r: 0.066 },
+    // Barrel: long on Z, wide, low.
+    { x: 0, y: 0.196, z: -0.030, r: 0.148, sx: 1.02, sy: 0.82, sz: 1.32 },
+    { x: 0, y: 0.198, z: 0.125, r: 0.112, sx: 1.00, sy: 0.90, sz: 0.94 },
+    { x: 0, y: 0.212, z: 0.192, r: 0.080, sx: 0.92, sy: 0.86 },
+    { x: 0, y: 0.192, z: -0.205, r: 0.126, sx: 1.00, sy: 0.96, sz: 0.94 },
+    // Belly: low-slung.
+    { x: 0, y: 0.150, z: -0.020, r: 0.088, sx: 0.96, sy: 0.52, sz: 1.16 },
+    // Shoulders and haunches.
+    { x: 0.122, y: 0.200, z: 0.110, r: 0.084, sx: 0.94, sy: 0.92, sz: 1.02 },
+    { x: -0.122, y: 0.200, z: 0.110, r: 0.084, sx: 0.94, sy: 0.92, sz: 1.02 },
+    { x: 0.138, y: 0.182, z: -0.172, r: 0.100, sx: 0.94, sy: 1.00, sz: 1.02 },
+    { x: -0.138, y: 0.182, z: -0.172, r: 0.100, sx: 0.94, sy: 1.00, sz: 1.02 },
+    // Back collar that swells up around the bulb's foot.
+    { x: 0, y: 0.248, z: -0.075, r: 0.104, sx: 1.22, sy: 0.55, sz: 1.10 },
+    { x: 0.058, y: 0.236, z: -0.070, r: 0.066 },
+    { x: -0.058, y: 0.236, z: -0.070, r: 0.066 },
   ];
   for (const sgn of [1, -1]) {
     for (const leg of LEGS) {
       const x = sgn * leg.x;
       const lz = leg.z;
-      // Upper leg, shank, then a wide flat foot pad. Stubby: the whole limb is
-      // only about a fifth of the animal's height.
-      bodyBalls.push({ x, y: 0.150, z: lz, r: 0.074, sx: 0.92, sy: 0.96, sz: 0.98 });
-      bodyBalls.push({ x, y: 0.092, z: lz, r: 0.062, sy: 0.94, sz: 0.96 });
-      bodyBalls.push({ x, y: 0.048, z: lz + 0.008, r: 0.062, sx: 1.06, sy: 0.60, sz: 1.14 });
+      // Stubby: upper leg, then a wide flat foot pad right at the ground.
+      bodyBalls.push({ x, y: 0.118, z: lz, r: 0.072, sx: 0.94, sy: 0.92, sz: 0.98 });
+      bodyBalls.push({ x, y: 0.066, z: lz, r: 0.062, sy: 0.90, sz: 0.98 });
+      bodyBalls.push({ x, y: 0.040, z: lz + 0.010, r: 0.060, sx: 1.08, sy: 0.58, sz: 1.14 });
       // Three toes, splayed forward.
-      for (const tx of [-0.036, 0, 0.036]) {
-        bodyBalls.push({ x: x + tx, y: 0.042, z: lz + 0.052, r: 0.030, sx: 0.86, sy: 0.58, sz: 1.0 });
+      for (const tx of [-0.034, 0, 0.034]) {
+        bodyBalls.push({ x: x + tx, y: 0.036, z: lz + 0.052, r: 0.029, sx: 0.86, sy: 0.56, sz: 1.0 });
       }
-      // Grooves between the toes, cut back far enough through the pad that the
-      // toes separate in silhouette instead of fusing into a mitten.
-      for (const gx of [-0.018, 0.018]) {
+      // Grooves between the toes.
+      for (const gx of [-0.017, 0.017]) {
         bodyBalls.push({
-          x: x + gx, y: 0.048, z: lz + 0.044, r: 0.027, sx: 0.52, sz: 2.2,
+          x: x + gx, y: 0.042, z: lz + 0.046, r: 0.026, sx: 0.50, sz: 2.2,
           strength: -0.92,
         });
       }
-      // Carve the web between the pair of legs. Without this the field between
-      // two nearby limbs closes over into a skirt and the gap the front view
-      // depends on never opens. Wide and moderate, not tight and strong — a
-      // tight carve leaves a raised lip around itself.
+      // Carve the web between the pair of legs so the gap opens.
       bodyBalls.push({
-        x: 0, y: 0.086, z: lz, r: 0.072, sx: 1.30, sy: 1.15, sz: 0.85,
-        strength: -0.80,
+        x: 0, y: 0.070, z: lz, r: 0.068, sx: 1.28, sy: 1.10, sz: 0.85,
+        strength: -0.78,
       });
-      // And under the chest/groin, to lift the belly line clear of the floor.
-      bodyBalls.push({ x: 0, y: 0.120, z: lz, r: 0.058, sx: 1.05, sy: 0.9, sz: 0.9, strength: -0.34 });
+      bodyBalls.push({ x: 0, y: 0.105, z: lz, r: 0.054, sx: 1.05, sy: 0.9, sz: 0.9, strength: -0.30 });
     }
-    // Waist, between shoulder and haunch: a wide, weak carve. A tight strong
-    // one does not make a smooth hollow, it makes a dent with a raised lip.
-    bodyBalls.push({ x: sgn * 0.140, y: 0.196, z: -0.026, r: 0.086, sx: 0.9, sz: 1.35, strength: -0.30 });
-    // Shadowed crease under the jaw, likewise softened.
-    bodyBalls.push({ x: sgn * 0.050, y: 0.258, z: 0.186, r: 0.070, strength: -0.20 });
+    // Waist hollow between shoulder and haunch — wide and weak.
+    bodyBalls.push({ x: sgn * 0.140, y: 0.176, z: -0.026, r: 0.084, sx: 0.9, sz: 1.35, strength: -0.28 });
   }
 
-  // Resolution is the whole poly budget. At 0.5m tall and 1–3m away the body
-  // only needs a cell of about a centimetre; the smoothing kernel, not the
-  // grid, is what keeps the surface from faceting, so 'smooth' goes up as
-  // resolution comes down.
-  const bodyGeo = metaSurface(bodyBalls, { resolution: 31, smooth: 1.02, padding: 0.04 });
-  const body = finishBody(new THREE.Mesh(bodyGeo, skin), new THREE.Vector3(0, 0.20, -0.01), 0.34);
+  const bodyGeo = metaSurface(bodyBalls, { resolution: 54, smooth: 1.02, padding: 0.04 });
+  const body = finishBody(new THREE.Mesh(bodyGeo, skin), new THREE.Vector3(0, 0.18, -0.01), 0.30);
 
-  // The markings, as drawn shapes. Mirrored, so the two sides match the way
-  // an illustrated character's do rather than the way a real animal's don't.
-  // Deliberately fewer and smaller than the previous pass, and spaced so no two
-  // ellipses touch. Bulbasaur's dapples are countable: a dozen discrete marks
-  // reads as a pattern, whereas the two dozen overlapping ones that were here
-  // fused into continuous dark territory and read as mud.
+  // The markings: countable, crisp, mirrored.
+  // FEW and LARGE. A dozen small dots reads as polka-dot camouflage; the HOME
+  // model has a handful of big irregular patches.
   const bodySpots: Spot[] = [
     ...bothSides([
       // Shoulder.
-      { u: 0.250, v: 0.124, ru: 0.038, rv: 0.042 },
-      // Mid flank — the one the three-quarter shot lives on.
-      { u: 0.236, v: -0.024, ru: 0.036, rv: 0.042 },
-      // Low flank, tucked under the barrel's turn.
-      { u: 0.160, v: -0.096, ru: 0.028, rv: 0.032 },
-      // Haunch.
-      { u: 0.224, v: -0.188, ru: 0.038, rv: 0.042 },
-      // Rear thigh, below and behind the haunch.
-      { u: 0.130, v: -0.146, ru: 0.026, rv: 0.030 },
+      { u: 0.230, v: 0.118, ru: 0.046, rv: 0.052 },
+      // Mid flank, low.
+      { u: 0.198, v: -0.040, ru: 0.044, rv: 0.054 },
+      // Haunch — the big one.
+      { u: 0.194, v: -0.194, ru: 0.054, rv: 0.062 },
     ]),
-    // Front of each foreleg and haunch, projected along the view axis so they
-    // land on the surfaces that face the dead-ahead camera. Without these the
-    // front render has no markings in it at all — every flank spot has turned
-    // edge-on by the time the camera is square to the animal.
-    { axis: 'z', face: 1, u: 0.136, v: 0.150, ru: 0.034, rv: 0.036 },
-    { axis: 'z', face: 1, u: -0.136, v: 0.150, ru: 0.034, rv: 0.036 },
-    { axis: 'z', face: 1, u: 0.132, v: 0.086, ru: 0.028, rv: 0.028 },
-    { axis: 'z', face: 1, u: -0.132, v: 0.086, ru: 0.028, rv: 0.028 },
-    // Outer shoulder. From dead ahead the head occludes the whole chest, so the
-    // only body masses the front camera can see are the two shoulder domes
-    // either side of the skull and the four legs below — those are where a
-    // front-readable marking has to go.
-    { axis: 'z', face: 1, u: 0.152, v: 0.236, ru: 0.040, rv: 0.036 },
-    { axis: 'z', face: 1, u: -0.152, v: 0.236, ru: 0.040, rv: 0.036 },
-    // Back, flanking the bud's collar, read from above.
-    { axis: 'y', face: 1, u: 0.104, v: 0.020, ru: 0.038, rv: 0.044 },
-    { axis: 'y', face: 1, u: -0.104, v: 0.020, ru: 0.038, rv: 0.044 },
+    // One mark per foreleg so the dead-ahead view isn't blank.
+    { axis: 'z', face: 1, u: 0.130, v: 0.100, ru: 0.036, rv: 0.044 },
+    { axis: 'z', face: 1, u: -0.130, v: 0.100, ru: 0.036, rv: 0.044 },
+    // Back, flanking the bulb's collar, read from above.
+    { axis: 'y', face: 1, u: 0.110, v: 0.005, ru: 0.042, rv: 0.052 },
+    { axis: 'y', face: 1, u: -0.110, v: 0.005, ru: 0.042, rv: 0.052 },
     // Rump.
-    { axis: 'y', face: 1, u: 0.062, v: -0.262, ru: 0.042, rv: 0.040 },
-    { axis: 'y', face: 1, u: -0.062, v: -0.262, ru: 0.042, rv: 0.040 },
+    { axis: 'y', face: 1, u: 0.060, v: -0.266, ru: 0.044, rv: 0.042 },
+    { axis: 'y', face: 1, u: -0.060, v: -0.266, ru: 0.044, rv: 0.042 },
   ];
-  // Warp right down and the feather band widened: the border wobble was being
-  // quantised by the mesh's own cell size and coming out as hard zigzags, which
-  // is the opposite of the soft-edged ellipse it was meant to produce.
-  // Feather up hard from 0.46. That value put the falloff band over half the
-  // ellipse's radius, so every marking was gradient all the way through and had
-  // no shape left — a soft-EDGED ellipse still needs a solid middle. 0.76 keeps
-  // the border organic while the mark reads as a drawn shape.
-  paintSpots(bodyGeo, bodySpots, SPOT, { seed: 71, belly: BELLY, warp: 0.005, feather: 0.76 });
-  // The seam. Without a ring of shadow where the bud enters the back, the bud
-  // is an object balanced on an animal no matter how well it is modelled.
-  // 0.46 was dark enough that the ring itself read as the gap it was meant to
-  // explain. A seam wants to be a hint of contact shadow, not a black band.
-  paintCollar(bodyGeo, 0, -0.062, 0.104, 0.176, 0.30);
+  paintSpots(bodyGeo, bodySpots, SPOT, { seed: 71, belly: BELLY, warp: 0.003, feather: 0.87 });
+  paintCollar(bodyGeo, 0, -0.075, 0.108, 0.180, 0.28);
   rig.body.add(body);
 
-  // Claws — three per foot, small, warm bone, angled down and forward. Kept
-  // deliberately low-contrast: they are the least important shape on the model.
+  // Claws — three per foot, small, warm bone.
   const clawMat = new THREE.MeshPhysicalMaterial({
-    color: 0xbdb49c, roughness: 0.5, clearcoat: 0.3, clearcoatRoughness: 0.4,
+    color: 0xcfc8b4, roughness: 0.5, clearcoat: 0.3, clearcoatRoughness: 0.4,
   });
-  const clawGeo = clawGeometry(0.0074, 0.020);
+  const clawGeo = clawGeometry(0.0078, 0.021);
   for (const sgn of [1, -1]) {
     for (const leg of LEGS) {
-      for (const tx of [-0.036, 0, 0.036]) {
+      for (const tx of [-0.034, 0, 0.034]) {
         const claw = new THREE.Mesh(clawGeo, clawMat);
-        claw.position.set(sgn * leg.x + tx, 0.030, leg.z + 0.078);
+        claw.position.set(sgn * leg.x + tx, 0.026, leg.z + 0.076);
         claw.rotation.set(Math.PI * 0.62, 0, -tx * 5.0);
         claw.castShadow = true;
         rig.body.add(claw);
@@ -782,138 +650,97 @@ export function buildBulbasaur(): Creature {
   }
 
   /* --- Head ---------------------------------------------------------- */
-  rig.head.position.set(0, 0.286, 0.238);
-  // The head was oversized to buy appeal and it bought the opposite: at 1.12 it
-  // was as wide as the ribcage and rounder, so from the front it occluded the
-  // entire body and the animal read as a head with feet — and it hid the bud
-  // completely. A quadruped's head has to be *smaller* than its chest for the
-  // four-square stance to be the first thing the eye reads.
-  rig.head.scale.setScalar(0.89);
+  // BIG. The HOME head is nearly as wide as the ribcage, wide-cheeked and
+  // flat-topped, carried high so the crown clears the back line.
+  rig.head.position.set(0, 0.292, 0.225);
+  rig.head.scale.setScalar(1.0);
 
-  // Forward, close-set and HIGH on the skull. Wide-set eyes low on the face is
-  // the frog read; bringing them in and up is most of what makes a face warm.
-  const eyeX = 0.048;
-  const eyeY = 0.031;
-  const eyeZ = 0.100;
+  // Eyes: large, high on the face, WIDE-SET — near the outer edges of the
+  // wide skull, the way the HOME model places them.
+  const eyeX = 0.064;
+  const eyeY = 0.028;
+  const eyeZ = 0.098;
   const headBalls: Ball[] = [
-    // Wide and slightly flattened rather than a ball — a spherical skull is
-    // what gives a stubby quadruped the pug read.
-    { x: 0, y: 0, z: 0, r: 0.140, sx: 1.16, sy: 0.90, sz: 0.98 },
-    // Muzzle: short, broad, dropped — a snub nose, not a snout.
-    { x: 0, y: -0.038, z: 0.084, r: 0.090, sx: 1.08, sy: 0.72, sz: 0.80 },
-    { x: 0, y: -0.076, z: 0.032, r: 0.070, sx: 1.0, sy: 0.56, sz: 1.0 },
-    { x: 0.100, y: -0.030, z: 0.028, r: 0.060, sy: 0.88 },
-    { x: -0.100, y: -0.030, z: 0.028, r: 0.060, sy: 0.88 },
-    // Cheeks packed out under the eyes, which is what makes a large eye read
-    // as set into a face instead of stuck onto a ball.
-    { x: 0.086, y: -0.036, z: 0.070, r: 0.058, sx: 0.9, sy: 0.80, sz: 0.86 },
-    { x: -0.086, y: -0.036, z: 0.070, r: 0.058, sx: 0.9, sy: 0.80, sz: 0.86 },
+    // Skull: wide and flattened.
+    { x: 0, y: 0.005, z: -0.005, r: 0.142, sx: 1.22, sy: 0.86, sz: 0.98 },
+    // Broad smooth muzzle mass — wide and shallow, NO protruding snout.
+    { x: 0, y: -0.040, z: 0.058, r: 0.088, sx: 1.24, sy: 0.66, sz: 0.78 },
+    { x: 0, y: -0.068, z: 0.020, r: 0.072, sx: 1.10, sy: 0.56, sz: 0.95 },
+    // Cheeks packed out under the eyes.
+    { x: 0.098, y: -0.036, z: 0.045, r: 0.062, sx: 0.94, sy: 0.82, sz: 0.90 },
+    { x: -0.098, y: -0.036, z: 0.045, r: 0.062, sx: 0.94, sy: 0.82, sz: 0.90 },
+    { x: 0.062, y: -0.048, z: 0.082, r: 0.056, sx: 0.92, sy: 0.74, sz: 0.82 },
+    { x: -0.062, y: -0.048, z: 0.082, r: 0.056, sx: 0.92, sy: 0.74, sz: 0.82 },
   ];
-  // NO BROW. Bulbasaur has no bony ridge over the eye; a sculpted one gives
-  // the character a permanent scowl no amount of eye tuning can undo. The
-  // fold above the eye is painted instead (see paintEyeFold), and the only
-  // geometry up there is the skull's own smooth curve.
 
-  // Ears: broad, flat, leaf-shaped flaps swept back and out. Each is a chain
-  // of heavily flattened balls (thin on X, wide on Y/Z) so the whole flap is
-  // a plate with a rounded margin rather than the pointed horn this had
-  // before. A horn on a quadruped reads as a predator; a leaf reads as grass.
+  // Ears: broad triangular flaps pointing up and slightly outward from the
+  // top corners of the skull.
   for (const sgn of [1, -1]) {
-    headBalls.push({ x: sgn * 0.082, y: 0.036, z: -0.012, r: 0.064, sx: 0.36, sy: 1.00, sz: 1.15 });
-    headBalls.push({ x: sgn * 0.098, y: 0.078, z: -0.070, r: 0.058, sx: 0.32, sy: 1.02, sz: 1.30 });
-    // Terminal ball taken up rather than further back: at z -0.132 it fused with
-    // the skull into one swept hump behind the head, which reads from the side as
-    // a crest. Ending the chain higher keeps the flap a distinct pointed leaf.
-    headBalls.push({ x: sgn * 0.106, y: 0.116, z: -0.106, r: 0.038, sx: 0.30, sy: 0.94, sz: 1.16 });
+    headBalls.push({ x: sgn * 0.082, y: 0.058, z: -0.018, r: 0.056, sx: 0.44, sy: 0.95, sz: 0.95 });
+    headBalls.push({ x: sgn * 0.096, y: 0.108, z: -0.026, r: 0.042, sx: 0.36, sy: 0.95, sz: 0.72 });
+    headBalls.push({ x: sgn * 0.107, y: 0.150, z: -0.032, r: 0.026, sx: 0.30, sy: 0.85, sz: 0.52 });
   }
-  // Eye sockets. The eye has to sit DOWN IN one of these so that only a
-  // spherical cap shows, flush with the skin — an eyeball sitting proud of the
-  // skull is the single thing that made this creature alarming rather than
-  // cute. Two counter-intuitive details matter: the carve must be wide and only
-  // moderately strong, because a tight strong negative against a strong
-  // positive field pushes up a raised lip around itself (that lip was reading
-  // as a heavy scowling brow), and a long sz tunnels the socket forward through
-  // the cheek instead of opening the aperture into a canyon.
+  // Eye sockets: wide, tall, moderate strength — the eyeball sits down in
+  // here so only a cap shows, flush with the skin.
   for (const sgn of [1, -1]) {
     headBalls.push({
-      // sy raised from 0.82: a socket flattened that hard is a horizontal SLOT,
-      // and its top rim clipped the eyeball into a crescent. The aperture has to
-      // be roughly as round as the eye it holds, or the pupil can never sit
-      // concentric inside it.
-      x: sgn * eyeX, y: eyeY + 0.002, z: eyeZ - 0.008, r: 0.052, sx: 1.12, sy: 0.94, sz: 1.55,
-      strength: -0.33,
+      x: sgn * eyeX, y: eyeY + 0.002, z: eyeZ - 0.006, r: 0.056, sx: 1.02, sy: 1.10, sz: 1.50,
+      strength: -0.32,
     });
   }
-  // Mouth: a single wide upcurve. The corners rise and the arc is shallow —
-  // no philtrum, no lip volume, no S-curve. Every one of those is what made
-  // the previous pass a human smirk.
-  // Wide and shallow. The previous curve dipped 0.078 below the corners over
-  // only 0.092 of half-width, and a deep narrow upcurve is not a grin — it is a
-  // pursed mouth, and with the muzzle mass sitting under it the pair read as a
-  // pout with a chin. Widening the span and halving the dip turns the same
-  // shape into a broad, relaxed line.
+  // Mouth: one wide, shallow upcurve spanning most of the muzzle width.
   const smile: THREE.Vector3[] = [
-    // Corners pulled in from ±0.100. At that span the line carried right round
-    // onto the cheek, so from the side the mouth ended in a black hook rather
-    // than tucking away out of sight.
-    new THREE.Vector3(-0.086, 0.002, 0.084),
-    new THREE.Vector3(-0.052, -0.030, 0.132),
-    new THREE.Vector3(0, -0.042, 0.158),
-    new THREE.Vector3(0.052, -0.030, 0.132),
-    new THREE.Vector3(0.086, 0.002, 0.084),
+    new THREE.Vector3(-0.108, 0.004, 0.066),
+    new THREE.Vector3(-0.062, -0.030, 0.118),
+    new THREE.Vector3(0, -0.044, 0.146),
+    new THREE.Vector3(0.062, -0.030, 0.118),
+    new THREE.Vector3(0.108, 0.004, 0.066),
   ];
   const smileCurve = new THREE.CatmullRomCurve3(smile, false, 'catmullrom', 0.5);
   for (let i = 0; i <= 10; i++) {
     const t = i / 10;
     const p = smileCurve.getPoint(t);
-    // The carve fades out at the corners so the groove tucks away instead of
-    // ending in two dimples.
     const taper = Math.pow(Math.sin(Math.PI * t), 0.4);
     headBalls.push({
-      x: p.x, y: p.y, z: p.z, r: 0.028, sx: 0.9, sy: 0.30, sz: 0.9,
-      strength: -0.22 * taper,
+      x: p.x, y: p.y, z: p.z, r: 0.026, sx: 0.9, sy: 0.30, sz: 0.9,
+      strength: -0.18 * taper,
     });
   }
-  // Nostrils: a broad shallow dish only. A tight negative ball against a
-  // strong muzzle field pushes up a raised rim around itself and renders as a
-  // pimple — the exact opposite of the hole it is supposed to cut.
-  for (const sgn of [1, -1]) {
-    headBalls.push({ x: sgn * 0.021, y: -0.004, z: 0.150, r: 0.028, sy: 0.6, sz: 0.45, strength: -0.26 });
+  // Carve the mouth POCKET: a second row of negative balls hung just below
+  // the lip line, so the skin itself dips inward across the opening and the
+  // pink interior can sit recessed BEHIND the lip instead of riding proud of
+  // the muzzle like a pout.
+  for (let i = 1; i < 10; i++) {
+    const t = i / 10;
+    const p = smileCurve.getPoint(t);
+    const taper = Math.pow(Math.sin(Math.PI * t), 0.9);
+    headBalls.push({
+      x: p.x * 0.94, y: p.y - 0.020, z: p.z, r: 0.026, sx: 0.9, sy: 0.60, sz: 0.9,
+      strength: -0.30 * taper,
+    });
   }
 
-  const headGeo = metaSurface(headBalls, { resolution: 33, smooth: 0.96, padding: 0.035 });
-  // Cavity strength dropped hard, from 0.24. The pass darkens by proximity to
-  // the form's core, and the deepest thing on a head is the eye socket — so at
-  // 0.24 it drew a dark crescent over each eye, and two dark crescents slanting
-  // toward the nose is an angry eyebrow no matter what the geometry is doing.
-  const head = finishBody(new THREE.Mesh(headGeo, skin), new THREE.Vector3(0, 0, 0), 0.13);
-  // Markings continue onto the back and sides of the skull only — the face
-  // itself is clean, and mottling on a muzzle reads as disease.
+  const headGeo = metaSurface(headBalls, { resolution: 46, smooth: 0.96, padding: 0.035 });
+  const head = finishBody(new THREE.Mesh(headGeo, skin), new THREE.Vector3(0, 0, 0), 0.12);
+  // Markings: forehead patch (a Bulbasaur signature), ear-inner shading, and
+  // marks on the back of the skull.
   const headSpots: Spot[] = [
+    // ONE forehead patch, offset like the artwork. A single z-projection with
+    // its near-binary gate covers both the brow and the forward-curving crown
+    // (their normals all carry +z); the old y-projected twin only smeared it.
+    { axis: 'z', face: 1, u: 0.042, v: 0.072, ru: 0.034, rv: 0.032 },
+    // Inner-ear shading: small, high on the flap so it stays off the skull.
+    { axis: 'z', face: 1, u: 0.097, v: 0.132, ru: 0.020, rv: 0.030 },
+    { axis: 'z', face: 1, u: -0.097, v: 0.132, ru: 0.020, rv: 0.030 },
     ...bothSides([
-      { u: 0.038, v: -0.062, ru: 0.044, rv: 0.050 },
-      { u: -0.026, v: -0.104, ru: 0.034, rv: 0.038 },
+      { u: 0.028, v: -0.072, ru: 0.038, rv: 0.044 },
     ]),
-    { axis: 'y', face: 1, u: 0.042, v: -0.088, ru: 0.042, rv: 0.050 },
-    { axis: 'y', face: 1, u: -0.042, v: -0.088, ru: 0.042, rv: 0.050 },
   ];
-  paintSpots(headGeo, headSpots, SPOT, { seed: 23, warp: 0.008 });
-  // NO PAINTED FOLD. Even at 0.09 the ring above the eye rendered as a dark
-  // slanted wedge over each socket, and two dark wedges slanting down toward
-  // the nose is a scowl — the exact fault the fold was supposed to avoid. The
-  // socket's own cavity shading is all the contact shadow the eye needs, and it
-  // sits *around* the eye rather than *above* it, which is the difference
-  // between a set-in eye and an eyebrow.
+  paintSpots(headGeo, headSpots, SPOT, { seed: 23, warp: 0.003, feather: 0.87 });
   rig.head.add(head);
 
   /* --- Mouth line ---------------------------------------------------- */
-  // Near-black cool green rather than a lip colour. The previous maroon read
-  // as a pink mouth interior from every angle, and Bulbasaur's mouth is a
-  // drawn line with nothing behind it.
-  const mouthMat = new THREE.MeshStandardMaterial({ color: 0x1d2a24, roughness: 0.7 });
-  // Snapped onto the meshed muzzle rather than trusting the authored z. The
-  // groove carved above pulls the skin back along this line, so the visible
-  // line is laid just proud of where the surface actually ended up.
+  const mouthMat = new THREE.MeshStandardMaterial({ color: 0x142521, roughness: 0.7 });
   const mouthCurve = new THREE.CatmullRomCurve3(
     smile.map((p) => {
       const zs = frontSurfaceZ(headGeo, p.x, p.y, 0.017);
@@ -921,59 +748,74 @@ export function buildBulbasaur(): Creature {
     }),
     false, 'catmullrom', 0.5,
   );
-  const mouth = new THREE.Mesh(mouthLineGeometry(mouthCurve, 0.0068, 22, 5), mouthMat);
+  const mouth = new THREE.Mesh(mouthLineGeometry(mouthCurve, 0.0052, 24, 5), mouthMat);
   mouth.renderOrder = 1;
   rig.head.add(mouth);
 
-  // The hole itself is a dark inset bead. At this scale a nostril is a value,
-  // not a form, and a sunk bead reads as one from every angle where a sculpted
-  // dent just catches a highlight and disappears.
-  // Kept very close to the skin's own value. Two dark beads sitting right above
-  // the mouth line read as a pig's snout; the nostrils only need to be enough
-  // of a break in the surface to stop the muzzle being blank.
-  const nostrilMat = new THREE.MeshStandardMaterial({ color: 0x156056, roughness: 0.9 });
+  // The open smile: shallow pink interior hung below the lip line, as in the
+  // HOME render. Kept subtle — a lens of pink, not a gaping jaw.
+  const innerMat = new THREE.MeshStandardMaterial({
+    color: 0xb5666e,
+    roughness: 0.85,
+    vertexColors: true,
+    side: THREE.DoubleSide,
+  });
+  const inner = new THREE.Mesh(
+    mouthInteriorGeometry(
+      smile.map((p) => {
+        const zs = frontSurfaceZ(headGeo, p.x, p.y, 0.017);
+        return new THREE.Vector3(p.x, p.y, Number.isFinite(zs) ? zs : p.z);
+      }),
+      headGeo,
+      0.016,
+      0.0012,
+    ),
+    innerMat,
+  );
+  inner.castShadow = false;
+  inner.receiveShadow = false;
+  rig.head.add(inner);
+
+  // Nostrils: two tiny dark SLITS, high above the mouth, well apart. A value,
+  // not a form — no raised geometry anywhere near them.
+  const nostrilMat = new THREE.MeshStandardMaterial({ color: 0x0e3a35, roughness: 0.9 });
   for (const sgn of [1, -1]) {
-    const n = new THREE.Mesh(new THREE.SphereGeometry(0.0080, 9, 6), nostrilMat);
-    const nx = sgn * 0.021;
-    const ny = -0.004;
-    const nz = frontSurfaceZ(headGeo, nx, ny, 0.014);
-    n.position.set(nx, ny, (Number.isFinite(nz) ? nz : 0.148) - 0.0012);
-    n.scale.set(0.85, 1.15, 0.42);
-    n.rotation.z = sgn * -0.30;
+    const n = new THREE.Mesh(new THREE.SphereGeometry(0.0058, 8, 6), nostrilMat);
+    const nx = sgn * 0.030;
+    const ny = 0.070;
+    const nzs = frontSurfaceZ(headGeo, nx, -0.005, 0.014);
+    n.position.set(nx, -0.005, (Number.isFinite(nzs) ? nzs : 0.135) - 0.0010);
+    n.scale.set(0.55, 1.5, 0.35);
+    n.rotation.z = sgn * -0.45;
+    void ny;
     rig.head.add(n);
   }
 
   /* --- Eyes ---------------------------------------------------------- */
-  // Small, seated deep in the sockets carved above, and only slightly proud of
-  // the skin. The previous eye was 0.0405 on a 0.140 skull and sat clear of the
-  // surface as a polished sphere: that is a Muppet, and it is why this lineup
-  // scored what it scored. Everything here is aimed at the opposite read —
-  // small, matte, set in, and relaxed.
-  const EYE_R = 0.0330;
+  // Large — the eyes carry the character. Tall almond via holder scale, a
+  // slight outward tilt of the long axis, seated in the sockets so the rim
+  // overlaps the eyeball and the dark base sphere reads as the outline.
+  const EYE_R = 0.0375;
   for (const sgn of [1, -1]) {
     const holder = new THREE.Group();
-    // Pushed back into the skull so the socket rim overlaps the eyeball's
-    // equator all the way round and only a cap is visible. 0.42 rather than
-    // 0.52: seated any deeper and the aperture closes down over the iris until
-    // only the pupil shows, so the eye stops being red.
-    // 0.32 rather than 0.38. Still deep enough that the socket rim overlaps the
-    // eyeball's equator all the way round — so only a cap shows and nothing
-    // protrudes — but shallow enough that the visible cap is a good deal wider
-    // than the pupil, which is what keeps the red reading as a ring.
-    holder.position.set(sgn * eyeX, eyeY, eyeZ - EYE_R * 0.32);
-    // Splay halved. Any meaningful yaw swings the pupil off the aperture's centre
-    // and the pair read as looking past the camera rather than at it.
+    // Seated shallow: a deeply recessed ball turns the socket into a porthole
+    // and the visible cap slides around with view parallax (the capture runs
+    // mid-idle-animation, so the head is rarely dead square to the camera).
+    holder.position.set(sgn * eyeX, eyeY, eyeZ - EYE_R * 0.26);
     holder.rotation.y = sgn * 0.05;
-    // A gentle vertical squash: a perfectly round eye is a startled eye.
-    holder.scale.set(1, 0.90, 1);
+    // Pitched up a touch: the vertical stretch plus the cheek cropping the
+    // eye's lower half otherwise concentrates the white margin at the top.
+    holder.rotation.x = -0.10;
+    // Tall almond, top tilted slightly outward.
+    holder.rotation.z = -sgn * 0.12;
+    holder.scale.set(0.92, 1.22, 1);
 
-    const eye = bulbaEye(EYE_R);
+    const eye = bulbaEye(EYE_R, sgn);
     holder.add(eye);
 
-    // Blink lid, in the skin material so it disappears into the face. Cheap —
-    // it is only ever seen for a tenth of a second.
+    // Blink lid in the skin material.
     const lid = new THREE.Mesh(
-      new THREE.SphereGeometry(EYE_R * 1.06, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.SphereGeometry(EYE_R * 1.10, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
       skin,
     );
     ensureVertexColor(lid.geometry);
@@ -988,57 +830,92 @@ export function buildBulbasaur(): Creature {
 
   /* --- Bulb ---------------------------------------------------------- */
   const bulbGroup = new THREE.Group();
-  // ON THE BACK, not on the head. The head sits at z = +0.242; the bud's axis
-  // is at z = -0.055, which is behind the shoulders and over the spine, and its
-  // FOOT is at y = 0.286 — below the head's centre line. Those two facts
-  // together are the whole difference between a Pokemon with a bulb and a
-  // Pokemon in a hat: the bud must start lower than the skull and well behind
-  // it, so the neck and the back of the head are visible above and in front of
-  // it from every angle.
-  const BULB_Z = -0.062;
-  // Lifted so the foot sits just at the skin rather than a finger's width under
-  // it: the seam should eat the scale roots and nothing else.
-  bulbGroup.position.set(0, 0.320, BULB_Z);
-  // Squat, but only mildly. At 0.78 the squash was flattening the whorls faster
-  // than the ogee could close them, which is half of why the bud opened out.
-  bulbGroup.scale.set(1, 0.92, 1);
+  // On the BACK, behind the shoulders, foot buried in the collar so the seam
+  // eats the base. The tip is the highest point of the whole silhouette.
+  // Sunk into the back so the foot is buried in the collar swell — the seam
+  // must eat the bulb's bottom edge or it reads as resting on the spine.
+  bulbGroup.position.set(0, 0.250, -0.082);
   rig.body.add(bulbGroup);
 
-  // Paler and yellower than the skin, so the bud separates from the body as a
-  // different substance — waxy plant against matte hide.
+  // Leaf green — a clearly different, warmer green than the turquoise hide.
   const bulbMat = creatureSkin({
-    color: 0x5f8c2c,
-    subsurface: 0x9cbe49,
-    // A bud is thin and translucent — light passes right through the scale
-    // margins, so the wrap term runs hotter here than on skin.
-    wrap: 0.22,
-    rim: 0.07,
+    color: 0x287612,
+    subsurface: 0x4f9c26,
+    wrap: 0.20,
+    rim: 0.06,
     roughness: 0.95,
-    // A cellular normal gives the packed-plate surface of a closed bud, and
-    // is the main thing separating bulb from skin as a material.
-    detail: 'scales',
-    detailScale: 2,
+    detail: 'pores',
+    detailScale: 3,
   });
-  // Waxy, not glossy: a broad soft clearcoat sheen along the plate crowns.
-  bulbMat.clearcoat = 0.28;
-  bulbMat.clearcoatRoughness = 0.42;
-  bulbMat.sheen = 0.10;
-  // The cellular normal was crazing the whole bud like cracked glaze, which
-  // reads as a diseased or ceramic surface. Barely there is enough.
-  bulbMat.normalScale.set(0.07, 0.07);
-  bulbMat.envMapIntensity = 0.30;
+  bulbMat.clearcoat = 0.22;
+  bulbMat.clearcoatRoughness = 0.45;
+  bulbMat.sheen = 0.08;
+  bulbMat.normalScale.set(0.06, 0.06);
+  bulbMat.envMapIntensity = 0.25;
   bulbMat.roughnessMap = null;
   bulbMat.roughness = 0.72;
-
   bulbMat.vertexColors = true;
-  // The outer whorl, one shade deeper so the courses separate as value rather
-  // than relying on the lighting to find the laps.
-  const bulbDeep = bulbMat.clone();
-  bulbDeep.color.setHex(0x4d7420);
-  bulbDeep.vertexColors = true;
 
-  const BULB_R = 0.176;
-  bulbGroup.add(budAssembly(BULB_R, bulbMat, bulbDeep));
+  // Base wraps: darker green.
+  const wrapMat = bulbMat.clone();
+  // A deeply SATURATED leaf green. The blades' tops face the cyan sky fill,
+  // which lifts and desaturates whatever it hits (a diagnostic render showed
+  // pure red surviving where a muted green washed out to pale grey-cyan) —
+  // so the albedo leans hard into green to still read as leaf up top.
+  wrapMat.color.setHex(0x156e04);
+  wrapMat.vertexColors = true;
+  // Matte: clearcoat or env reflection also washes the tops out.
+  wrapMat.clearcoat = 0.04;
+  wrapMat.envMapIntensity = 0.12;
+  wrapMat.sheen = 0.03;
+  wrapMat.roughness = 0.85;
+
+  // Fat: the HOME bulb is about as wide as it is tall — a garlic dome with a
+  // short point, not a soft-serve cone.
+  const BULB_R = 0.168;
+  const BULB_H = 0.320;
+  const bulb = new THREE.Mesh(onionBulbGeometry(BULB_R, BULB_H), bulbMat);
+  bulb.castShadow = true;
+  // No receiveShadow on the bulb or its wraps: the leaf ring casting onto the
+  // dome (and the dome onto the leaves) printed acorn-shaped acne blobs.
+  bulb.receiveShadow = false;
+  bulbGroup.add(bulb);
+
+  // Ring of darker triangular wrap blades hugging the bulb's base all the
+  // way around. Each blade lies flat against the dome's lower flank — cupped
+  // to its circumference, bowed to its taper — with only the tip easing
+  // outward. Nothing tubular: the blades are an order of magnitude wider
+  // than they are thick from every angle.
+  const wrapGeo = wrapLeafGeometry(BULB_R * 0.74, BULB_R * 0.98, BULB_R * 0.06, BULB_R * 1.6);
+  const WRAPS = 6;
+  for (let i = 0; i < WRAPS; i++) {
+    const a = (i / WRAPS) * Math.PI * 2 + 0.42;
+    const pivot = new THREE.Group();
+    pivot.rotation.y = a;
+    const leaf = new THREE.Mesh(wrapGeo, wrapMat);
+    // A low calyx of wide blades: roots buried below the seam, blades leaning
+    // against the bulb's fat lower bulge, tips easing outward around the
+    // widest point — high enough to show as leaves, low enough not to spike.
+    // Side-facing blades sit lower, droop harder and run shorter, so their
+    // tips never peek past the body silhouette beside the ears in the
+    // dead-front view.
+    // `side` is ~1 only for blades facing straight sideways — the ones whose
+    // tips clear the torso silhouette beside the cheeks in the front view.
+    // The sixth power leaves the diagonal blades (the ones that dress the
+    // bulb in the three-quarter view) almost untouched.
+    // More tilt swings a sideways tip OUT past the torso; less keeps it
+    // hugging the dome. So the pure-side pair hugs tighter, runs shorter and
+    // roots deeper in the collar instead of drooping further.
+    const side = Math.abs(Math.sin(a));
+    const pure = Math.pow(side, 12);
+    leaf.position.set(0, -0.024 - 0.028 * pure, BULB_R * 0.68);
+    leaf.rotation.x = 0.62 - 0.12 * pure;
+    leaf.scale.setScalar(1 - 0.24 * pure);
+    leaf.castShadow = true;
+    leaf.receiveShadow = false;
+    pivot.add(leaf);
+    bulbGroup.add(pivot);
+  }
 
   rig.extras.push(bulbGroup);
 
@@ -1053,13 +930,11 @@ export function buildBulbasaur(): Creature {
     set attention(v: number) { attention = clamp(v, 0, 1); },
     update(dt, elapsed) {
       anim.update(dt, elapsed, attention);
-      // The shared blink lid is a hemisphere scaled to zero on Y when open,
-      // which leaves a coplanar disc that renders edge-on as a hard dark line
-      // across the eyeball. Hiding it while it is fully open costs nothing.
+      // Hide the coplanar lid disc while the eye is fully open.
       for (const lid of rig.eyelids) lid.visible = lid.scale.y > 0.02;
-      // The bud is heavy — it lags the body's motion.
-      bulbGroup.rotation.z = Math.sin(elapsed * 0.44 - 0.5) * 0.05;
-      bulbGroup.rotation.x = Math.sin(elapsed * 1.55 - 0.7) * 0.03;
+      // The bulb is heavy — it lags the body's motion.
+      bulbGroup.rotation.z = Math.sin(elapsed * 0.44 - 0.5) * 0.04;
+      bulbGroup.rotation.x = Math.sin(elapsed * 1.55 - 0.7) * 0.025;
     },
     celebrate: () => anim.celebrate(),
     dispose: () => disposeCreature(rig.root),

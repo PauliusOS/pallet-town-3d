@@ -55,10 +55,9 @@ import { createRig, IdleAnimator, taperTube, disposeCreature, type Creature } fr
 // Tuned against the studio key so the *mid-tone* lands on the reference
 // #F08030 with the brightest lit pixel below 245 in red, rather than the base
 // albedo matching on paper and clipping on screen.
-const SKIN = 0xc95307;
-const BELLY = 0xe0b761;
+const SKIN = 0xcc4c05;
+const BELLY = 0xdfbb55;
 const CLAW = 0xb9a582;
-const TOOTH = 0xd5c9ae;
 
 /* ------------------------------------------------------------------ */
 /* Sculpt hygiene                                                      */
@@ -339,8 +338,10 @@ function flameShell(
   lobes = 3.0,
   base = 0.55,
 ): FlameShell {
+  // Fat-bottomed teardrop: maximum girth in the lower third, then a long
+  // concave taper to the tip — the HOME flame is a plump drop, not a candle.
   const T = [0.00, 0.06, 0.14, 0.26, 0.40, 0.54, 0.68, 0.80, 0.90, 0.96, 1.00];
-  const R = [base, 0.82, 0.97, 1.00, 0.95, 0.85, 0.70, 0.53, 0.34, 0.17, 0.00];
+  const R = [base, 0.90, 1.00, 0.99, 0.91, 0.79, 0.63, 0.46, 0.29, 0.14, 0.00];
   const profile = T.map((t, i) => new THREE.Vector2(R[i] * radius, t * height));
   const geo = new THREE.LatheGeometry(profile, 26);
   geo.computeVertexNormals();
@@ -403,8 +404,8 @@ function flameShell(
       void main() {
         float f = abs(dot(normalize(vNrm), normalize(vDir)));
         float a = pow(clamp(f, 0.0, 1.0), uPower);
-        a *= smoothstep(1.0, 0.42, vH);        // the top third wisps out
-        vec3 c = mix(uHot, uCool, smoothstep(0.06, 0.66, vH));
+        a *= smoothstep(1.02, 0.55, vH);       // the very top wisps out
+        vec3 c = mix(uHot, uCool, smoothstep(0.10, 0.70, vH));
         gl_FragColor = vec4(c, clamp(a * uOpacity, 0.0, 1.0));
       }
     `,
@@ -446,96 +447,94 @@ interface EyeParts {
 }
 
 /**
- * One eye, built from scratch rather than through `makeEye`.
+ * One eye — a LARGE vertical-oval toon eye sitting nearly flush on the face.
  *
- * THE EYE IS A SPHERICAL CAP IN A CRATER, NOT A BALL ON A FACE. The single
- * worst failure this model had was two glossy marbles standing off the skull
- * with a dark angled band over each one — bug-eyed and, in profile, a scowl.
- * Everything here is arranged to stop that happening again:
- *
- *  - The eyeball is SMALL and its centre is placed BEHIND the carved socket
- *    floor by the caller, so only a shallow cap clears the surrounding skin.
- *    Nothing about the eye can protrude as a visible sphere because the sphere
- *    is buried.
- *  - Because only the cap is visible, the iris has to cover almost the whole
- *    cap or a ring of white shows around it and reads as startled sclera. The
- *    iris cap therefore runs out to 0.90 of the ball, and the sclera underneath
- *    is a warm off-white, not a bright one, so any sliver that does show at the
- *    extreme corners is a soft shadow rather than a bloodshot rim.
- *  - The iris is FLAT-ISH and matte: no clearcoat, no envmap, no maps of any
- *    kind, so it cannot pick up speckle. A big black pupil and exactly ONE
- *    small crisp catchlight carry the whole read.
- *  - There is no resting lid geometry at all. The upper fold is a positive
- *    metaball in the sculpt, in skin colour, so the lid is literally made of
- *    the same surface as the face and can never draw a dark band.
+ * The official model's eyes are essentially decals: big upright ovals on the
+ * FRONT of the face, teal iris filling most of the oval, a huge dark pupil,
+ * one white catchlight, and a sliver of white sclera showing along the top.
+ * Character comes almost entirely from these, so they are built as a stack of
+ * shallow nested ellipsoids — each layer's front face proud of the one behind
+ * it by a millimetre, so nothing z-fights and nothing reads as a marble.
  */
-function buildEye(radius: number, side: number, splay: number, skinMat: THREE.Material): EyeParts {
+function buildEye(w: number, h: number, side: number, splay: number, skinMat: THREE.Material): EyeParts {
   const holder = new THREE.Group();
   holder.rotation.y = side * splay;
-  // Slight vertical squash: a perfect circle reads alert, a squashed one reads
-  // relaxed. This is also what turns the visible cap into a soft oval.
-  holder.scale.y = 0.86;
+
+  const d = w * 0.85; // shallow: a lens, not a ball
+
+  // Dark liner ellipsoid BEHIND the sclera, slightly larger in x/y and set
+  // back in z: its rim shows as a thick dark outline around the whole eye —
+  // the HOME model draws this ring and it is what makes the eyes pop off the
+  // orange instead of floating as pale ovals.
+  const liner = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 20, 14),
+    new THREE.MeshStandardMaterial({ color: 0x14262c, roughness: 0.55 }),
+  );
+  liner.scale.set(w * 1.10, h * 1.075, d * 0.92);
+  liner.position.z = -d * 0.05;
+  holder.add(liner);
 
   const sclera = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 12, 9),
+    new THREE.SphereGeometry(1, 20, 14),
     new THREE.MeshPhysicalMaterial({
-      // Deliberately a dim warm grey, not a white. With the ball seated in a
-      // socket the only sclera that can ever show is the extreme corner, and it
-      // must read as the shadow inside the lid rather than as a ring of white
-      // around the iris — a white ring is the whole "startled Muppet" effect.
-      color: 0x9c8f80, roughness: 0.68, clearcoat: 0.0, envMapIntensity: 0.06,
+      color: 0xf4f1e6, roughness: 0.35, clearcoat: 0.25, clearcoatRoughness: 0.35,
+      envMapIntensity: 0.12,
     }),
   );
+  sclera.scale.set(w, h, d);
   holder.add(sclera);
 
-  // Iris and pupil ride on their own pivot, counter-rotated so the gaze
-  // converges even though the eyeballs themselves splay outward.
-  const gaze = new THREE.Group();
-  gaze.rotation.y = -side * (splay - 0.020);
-  holder.add(gaze);
+  // Iris and pupil are SPHERE CAPS hugging a slightly inflated copy of the
+  // sclera ellipsoid. Floating shells left their rims sticking off the white
+  // as dark fins in profile; a cap's rim lies on the ellipsoid, so the eye is
+  // watertight from every angle. The iris sits slightly LOW so a sliver of
+  // white shows along the top — that sliver is what makes the face friendly.
+  // Caps must stay CENTRED: any y-offset breaks the hug and buries one layer
+  // under the one behind it (the offset iris vanished under the sclera and the
+  // eye rendered black-on-white). Layer separation comes from inflation alone.
+  const capMesh = (reach: number, inflate: number, mat: THREE.Material): THREE.Mesh => {
+    const geo = new THREE.SphereGeometry(1, 24, 12, 0, Math.PI * 2, 0, Math.asin(clamp(reach, 0, 1)));
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = Math.PI / 2;              // cap axis: +Y -> +Z
+    m.scale.set(w * inflate, d * inflate, h * inflate);
+    return m;
+  };
+  // Darker saturated teal, matched to the HOME render — the previous pale
+  // sky-blue washed out under the studio key.
+  // A touch of emissive keeps the teal saturated when the head shades the
+  // eye — a purely lit iris went near-black in three-quarter view.
+  const iris = capMesh(0.93, 1.02, new THREE.MeshPhysicalMaterial({
+    color: 0x0f6e80, roughness: 0.38, clearcoat: 0.3, clearcoatRoughness: 0.3,
+    envMapIntensity: 0.10, emissive: 0x0c4a58, emissiveIntensity: 0.5,
+  }));
+  holder.add(iris);
+  const pupil = capMesh(0.46, 1.035, new THREE.MeshBasicMaterial({ color: 0x101314 }));
+  holder.add(pupil);
 
-  // Nearly the whole ball: with the eye seated in a socket the only thing the
-  // camera can see is the cap around the +Z pole, and that cap must be iris.
-  const IRIS = 0.965;
-  const iris = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 1.004, 14, 8, 0, Math.PI * 2, 0, Math.asin(clamp(IRIS, 0, 1))),
-    new THREE.MeshPhysicalMaterial({
-      color: 0x2a94a6, roughness: 0.56, clearcoat: 0.0, envMapIntensity: 0.05,
-      metalness: 0,
-    }),
-  );
-  iris.rotation.x = Math.PI / 2;
-  gaze.add(iris);
-
-  // The pupil must leave a WIDE band of iris all the way round. At 0.66 the
-  // black filled the middle of the visible cap and the teal survived only as a
-  // thin rim, which reads as a googly donut rather than as an eye. Roughly half
-  // the cap is the ratio that keeps the iris colour legible at 2m.
-  const pupilR = IRIS * 0.50;
-  const pupil = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 1.01, 14, 7, 0, Math.PI * 2, 0, Math.asin(clamp(pupilR, 0, 1))),
-    new THREE.MeshBasicMaterial({ color: 0x130f0e }),
-  );
-  pupil.rotation.x = Math.PI / 2;
-  gaze.add(pupil);
-
-  // Exactly one catchlight, up-left, small and crisp, and deliberately not 255
-  // white: the flame core has to own the brightest pixel in every frame.
+  // Exactly one catchlight, upper-left from the viewer, crisp and not-quite
+  // white so the flame keeps the brightest pixel in frame.
   const hi = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 0.150, 7, 5),
-    new THREE.MeshBasicMaterial({ color: 0xe8ecf2 }),
+    new THREE.SphereGeometry(1, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xeef1f4 }),
   );
-  hi.position.set(-radius * 0.30, radius * 0.36, radius * 0.94);
-  gaze.add(hi);
+  hi.scale.set(w * 0.20, h * 0.13, d * 0.18);
+  hi.position.set(-w * 0.18, h * 0.16, d * 0.99);
+  holder.add(hi);
 
-  // Blink lid only — a downward dome hung from the top of the eyeball, scaled
-  // flat at rest so it contributes nothing at all to the resting expression.
-  const LR = radius * 1.06;
-  const lidGeo = new THREE.SphereGeometry(LR, 12, 4, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
-  lidGeo.scale(1, 2.2, 1);
+  // Blink lid — a skin dome hung from the top of the oval, scaled flat at
+  // rest so it contributes nothing to the neutral expression.
+  const LR = Math.max(w, h) * 1.1;
+  const lidGeo = new THREE.SphereGeometry(LR, 14, 5, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+  // Sized to the eye WIDTH and kept SHALLOW in z: the rest pose (scale.y = 0)
+  // collapses the dome to a flat disc, and any part of that disc that clears
+  // the eyeball or the skin renders as a floating dark lash in profile. The
+  // whole disc therefore has to live INSIDE the head: narrow in x, thin in z,
+  // pushed back. Blink coverage is slightly imperfect for it; a 150ms blink
+  // artifact is a far better trade than a permanent lash.
+  lidGeo.scale(w / LR * 1.02, 2.2, d / LR * 0.55);
   lidGeo.computeVertexNormals();
   const lid = new THREE.Mesh(lidGeo, skinMat);
-  lid.position.y = LR * 0.92;
+  lid.position.set(0, h * 0.94, -d * 0.35);
   lid.scale.y = 0;
   lid.castShadow = false;
   holder.add(lid);
@@ -557,9 +556,11 @@ export function buildCharmander(): Creature {
   /* ---- Materials --------------------------------------------------- */
   // The marking is applied in the shader from the `aMark` attribute, so the
   // material's own colour is white and the vertex colours carry cavity only.
+  // detail: 'none' — the scale/pore normal map read as diseased, wrinkly skin
+  // at this character's size. The official model is perfectly smooth vinyl.
   const painted = creatureSkin({
     color: 0xffffff, subsurface: 0xb8360a, wrap: 0.05, rim: 0.015,
-    roughness: 0.66, detail: 'scales', detailScale: 3.0,
+    roughness: 0.60, detail: 'none',
   });
   painted.vertexColors = true;
   painted.clearcoat = 0.06;
@@ -575,7 +576,6 @@ export function buildCharmander(): Creature {
   painted.specularIntensity = 0.30;
   painted.specularColor = new THREE.Color(0xffc59a);
   painted.roughnessMap = null; // its own noise blows out to plastic hotspots
-  if (painted.normalScale) painted.normalScale.set(0.20, 0.20);
 
   // Chain the marking patch on top of creatureSkin's own patch rather than
   // replacing it — the scatter and rim terms still have to run.
@@ -622,11 +622,6 @@ export function buildCharmander(): Creature {
     color: CLAW, roughness: 0.48, clearcoat: 0.22, clearcoatRoughness: 0.45, metalness: 0,
     sheen: 0.12, sheenRoughness: 0.9,
   });
-  const toothMat = new THREE.MeshPhysicalMaterial({
-    color: TOOTH, roughness: 0.42, clearcoat: 0.20, clearcoatRoughness: 0.4, metalness: 0,
-  });
-  const mouthMat = new THREE.MeshStandardMaterial({ color: 0x4a1a12, roughness: 0.78 });
-  const nostrilMat = new THREE.MeshStandardMaterial({ color: 0x6e2a0e, roughness: 0.8 });
 
   /* ---- Body -------------------------------------------------------- */
   // Chest -> waist -> belly -> hips, so the torso has an hourglass rather than
@@ -648,25 +643,27 @@ export function buildCharmander(): Creature {
     // a concave break under the jawline instead of one fused mass
     { x: 0, y: 0.400, z: -0.020, r: 0.082, sy: 0.28, strength: -0.62 },
 
-    // arms: shoulder -> upper arm -> elbow -> forearm -> wrist -> palm
-    { x: 0.088, y: 0.306, z: 0.004, r: 0.040 },
-    { x: -0.088, y: 0.306, z: 0.004, r: 0.040 },
-    { x: 0.119, y: 0.282, z: 0.006, r: 0.030 },
-    { x: -0.119, y: 0.282, z: 0.006, r: 0.030 },
-    { x: 0.139, y: 0.254, z: 0.017, r: 0.027 },                            // elbow
-    { x: -0.139, y: 0.254, z: 0.017, r: 0.027 },
-    { x: 0.151, y: 0.230, z: 0.040, r: 0.024 },                            // forearm
-    { x: -0.151, y: 0.230, z: 0.040, r: 0.024 },
-    { x: 0.157, y: 0.213, z: 0.060, r: 0.020 },                            // wrist
-    { x: -0.157, y: 0.213, z: 0.060, r: 0.020 },
-    { x: 0.159, y: 0.203, z: 0.078, r: 0.030, sy: 0.72, sz: 0.90 },        // palm
-    { x: -0.159, y: 0.203, z: 0.078, r: 0.030, sy: 0.72, sz: 0.90 },
-    // crook of the elbow, and a notch where the shoulder meets the ribs, so
-    // the arm reads as a limb hung off the body rather than a fused stump
-    { x: 0.127, y: 0.246, z: 0.036, r: 0.019, strength: -0.32 },
-    { x: -0.127, y: 0.246, z: 0.036, r: 0.019, strength: -0.32 },
-    { x: 0.084, y: 0.272, z: 0.012, r: 0.029, sx: 0.7, sy: 1.15, strength: -0.30 },
-    { x: -0.084, y: 0.272, z: 0.012, r: 0.029, sx: 0.7, sy: 1.15, strength: -0.30 },
+    // arms: SHORT and CHUNKY — shoulder -> upper arm -> elbow -> forearm ->
+    // wrist -> palm. The reference arm is nearly as thick as it is long; the
+    // thin tapering arm the previous build had read as an old man's.
+    // Posed slightly SPREAD, out and forward, the way HOME holds them — hands
+    // clear of the hips, palms angled ahead — rather than hanging at the seams.
+    { x: 0.090, y: 0.304, z: 0.006, r: 0.044 },
+    { x: -0.090, y: 0.304, z: 0.006, r: 0.044 },
+    { x: 0.126, y: 0.282, z: 0.014, r: 0.036 },
+    { x: -0.126, y: 0.282, z: 0.014, r: 0.036 },
+    { x: 0.154, y: 0.260, z: 0.028, r: 0.032 },                            // elbow
+    { x: -0.154, y: 0.260, z: 0.028, r: 0.032 },
+    { x: 0.174, y: 0.244, z: 0.050, r: 0.029 },                            // forearm
+    { x: -0.174, y: 0.244, z: 0.050, r: 0.029 },
+    { x: 0.188, y: 0.234, z: 0.070, r: 0.026 },                            // wrist
+    { x: -0.188, y: 0.234, z: 0.070, r: 0.026 },
+    { x: 0.196, y: 0.228, z: 0.090, r: 0.032, sy: 0.76, sz: 0.94 },        // palm
+    { x: -0.196, y: 0.228, z: 0.090, r: 0.032, sy: 0.76, sz: 0.94 },
+    // notch where the shoulder meets the ribs, so the arm reads as a limb
+    // hung off the body rather than a fused stump
+    { x: 0.086, y: 0.270, z: 0.014, r: 0.028, sx: 0.7, sy: 1.15, strength: -0.26 },
+    { x: -0.086, y: 0.270, z: 0.014, r: 0.028, sx: 0.7, sy: 1.15, strength: -0.26 },
 
     // legs: thigh -> knee -> shin -> ankle
     { x: 0.076, y: 0.130, z: -0.002, r: 0.056, sy: 1.00 },
@@ -699,23 +696,26 @@ export function buildCharmander(): Creature {
 
   // Toes and fingers, mirrored. Digits are real sculpted volumes with the
   // claws sitting on their tips, not claws glued to a mitten.
-  const FINGER: number[] = [-0.36, 0, 0.36];
-  const fingerTips: THREE.Vector3[] = [];
+  const FINGER: number[] = [-0.52, -0.17, 0.17, 0.52];
+  const fingerTips: { p: THREE.Vector3; spread: number; s: number }[] = [];
   const toeTips: THREE.Vector3[] = [];
   for (const s of [1, -1]) {
-    // hand — three short capsules splayed off the palm
+    // hand — FOUR short capsules splayed off the palm, per the reference
     for (const spread of FINGER) {
       const dx = Math.sin(spread);
       const dz = Math.cos(spread);
-      bodyBalls.push({ x: s * (0.159 + dx * 0.018), y: 0.200, z: 0.078 + dz * 0.018, r: 0.0115 });
-      bodyBalls.push({ x: s * (0.159 + dx * 0.032), y: 0.198, z: 0.078 + dz * 0.032, r: 0.0100 });
-      fingerTips.push(new THREE.Vector3(s * (0.159 + dx * 0.041), 0.196, 0.078 + dz * 0.041));
+      bodyBalls.push({ x: s * (0.196 + dx * 0.019), y: 0.225, z: 0.090 + dz * 0.019, r: 0.0115 });
+      bodyBalls.push({ x: s * (0.196 + dx * 0.033), y: 0.223, z: 0.090 + dz * 0.033, r: 0.0100 });
+      fingerTips.push({
+        p: new THREE.Vector3(s * (0.196 + dx * 0.042), 0.221, 0.090 + dz * 0.042),
+        spread, s,
+      });
       // split between fingers so the hand is not a mitten
-      if (spread < 0.3) {
+      if (spread < 0.4) {
         bodyBalls.push({
-          x: s * (0.159 + Math.sin(spread + 0.18) * 0.027), y: 0.199,
-          z: 0.078 + Math.cos(spread + 0.18) * 0.027,
-          r: 0.0105, sx: 0.5, sy: 1.1, strength: -0.34,
+          x: s * (0.196 + Math.sin(spread + 0.17) * 0.028), y: 0.224,
+          z: 0.090 + Math.cos(spread + 0.17) * 0.028,
+          r: 0.0100, sx: 0.5, sy: 1.1, strength: -0.34,
         });
       }
     }
@@ -788,11 +788,10 @@ export function buildCharmander(): Creature {
   const handClaw = clawGeometry(0.023, 0.0068);
   const footClaw = clawGeometry(0.024, 0.0080);
 
-  for (let i = 0; i < fingerTips.length; i++) {
-    const p = fingerTips[i];
+  for (const tip of fingerTips) {
     const c = new THREE.Mesh(handClaw, clawMat);
-    c.position.copy(p).add(new THREE.Vector3(0, -0.001, -0.007));
-    c.rotation.set(Math.PI * 0.56, 0, ((i % 3) - 1) * 0.30 * Math.sign(p.x));
+    c.position.copy(tip.p).add(new THREE.Vector3(0, -0.001, -0.007));
+    c.rotation.set(Math.PI * 0.56, 0, -tip.spread * 0.8 * tip.s);
     c.castShadow = true;
     rig.body.add(c);
   }
@@ -812,116 +811,139 @@ export function buildCharmander(): Creature {
   // a muzzle drooping forward and down — an E.T. profile, not a lizard's.
   rig.head.position.set(0, 0.448, 0.004);
 
-  // Mouth line: a wide, gently upturned arc that WRAPS the muzzle. z falls away
-  // with the angle so the corners follow the narrowing sides of the snout
-  // instead of hanging in the air off the front of it, which is what turns a
-  // painted line into a real lip that has a near side and a far side.
-  const mouthPoint = (a: number): THREE.Vector3 =>
-    new THREE.Vector3(
-      Math.sin(a) * 0.051,
-      -0.035 + (1 - Math.cos(a)) * 0.043,
-      0.130 - (1 - Math.cos(a)) * 0.074,
+  // Mouth line: a WIDE, gently upturned arc that WRAPS the muzzle all the way
+  // to the cheeks — in the HOME render the grin is the widest facial feature,
+  // spanning about two thirds of the head. The z coordinate cannot come from a
+  // (1-cos) falloff at this width: the muzzle's plan silhouette is a bulbous
+  // nose in the middle falling away steeply to the cheeks, so z is a piecewise
+  // ramp fitted to the sculpt's actual plan-view at mouth height. That keeps
+  // every point of the line ON the skin instead of floating off the corners.
+  // Corner x of 0.075 against a probed head half-width of ~0.113 at mouth
+  // height puts the grin at about two thirds of the head — matching HOME. The
+  // z table is FITTED TO THE SCULPT: probed by raycasting the actual marching-
+  // cubes head front-to-back along this arc, then inset 1mm. Guessing these
+  // values buries the corners of the mouth centimetres inside the cheeks.
+  const MOUTH_X = 0.075;
+  const MOUTH_PLAN: [number, number][] = [
+    [0.000, 0.1205], [0.014, 0.1200], [0.021, 0.1146], [0.028, 0.1115],
+    [0.035, 0.1058], [0.041, 0.0956], [0.047, 0.0888], [0.052, 0.0813],
+    [0.057, 0.0748], [0.062, 0.0732], [0.069, 0.0700], [0.075, 0.0665],
+  ];
+  const mouthPoint = (a: number): THREE.Vector3 => {
+    const x = Math.sin(a) * MOUTH_X;
+    return new THREE.Vector3(
+      x,
+      -0.031 + (1 - Math.cos(a)) * 0.028,
+      ramp(MOUTH_PLAN, Math.abs(x)),
     );
+  };
 
+  // The OPEN grin. Angular half-width of the opening (the crease continues a
+  // little past the corners), and the vertical gap between the lips: widest at
+  // the centre, zero at the corners — a wide shallow upturned crescent, NOT a
+  // round pit. All the mouth geometry below is driven by these two.
+  const MOUTH_A = 1.45;
+  const MOUTH_GAP = 0.030;
+  const mouthGap = (a: number): number =>
+    MOUTH_GAP * Math.pow(Math.max(0, Math.cos((a / MOUTH_A) * Math.PI * 0.5)), 0.7);
+  // Local outward direction of the muzzle surface at lip angle a — used to
+  // hold the mouth surfaces a hair proud of the sculpt so nothing z-fights.
+  // Even at the corners the cheek front still faces mostly FORWARD (plan
+  // normal ~(0.48, 0.88) from the probe), so the z component stays dominant;
+  // a sideways-pointing offset would slide the strips along the skin instead
+  // of lifting off it.
+  const mouthOut = (a: number): THREE.Vector3 =>
+    new THREE.Vector3(
+      Math.sin(a) * 0.5,
+      -0.16,
+      1.0 - 0.45 * Math.sin(a) * Math.sin(a),
+    ).normalize();
+  // Offset along the local outward direction. Slightly proud only where the
+  // opening is widest (so the dark fill is never z-fought by the skin), and
+  // SUNK toward the corners. Kept small on purpose: a fat proud offset is what
+  // used to read as puffy raised lips.
+  // The sunk-to-proud transition is deliberately STEEP: the band where the
+  // offset crosses zero is a z-fighting stripe against the skin, and a slow
+  // ramp parks that band right at the visible corners of the grin.
+  const mouthLift = (a: number): number =>
+    -0.0018 + 0.0032 * clamp(mouthGap(a) / 0.010, 0, 1);
+
+  // SMOOTH ABOVE ALL. Every socket carve, lid fold, glabella fill, jaw crease
+  // and muzzle crease the previous face had rendered as wrinkles at this
+  // scale — an old man's face on a baby dinosaur. The official head is one
+  // clean rounded volume: tall dome, full cheeks, a SHORT smooth muzzle, and
+  // that is all. The eyes are surface-mounted ovals, not sunk marbles, so the
+  // sculpt no longer needs sockets at all.
   const headBalls: Ball[] = [
-    { x: 0, y: 0.024, z: 0.002, r: 0.086, sx: 1.05, sy: 1.00, sz: 0.80 },    // cranium — tall dome
+    { x: 0, y: 0.024, z: 0.002, r: 0.086, sx: 1.10, sy: 1.00, sz: 0.82 },    // cranium — tall dome
     { x: 0, y: 0.008, z: -0.038, r: 0.050, sy: 0.96, sz: 0.62 },             // occiput — vertical back
-    // Glabella. The two socket carves sit close enough that the field between
-    // them dips, and that dip renders as a hard V-shaped ridge across the
-    // bridge of the nose — a frown, which is exactly the expression the brief
-    // says to get rid of. This fills it back in so the forehead runs smooth
-    // from one eye to the other. Narrower now that the eyes sit closer in.
-    { x: 0, y: 0.034, z: 0.050, r: 0.031, sx: 0.96, sy: 0.86, sz: 0.72, strength: 0.68 },
-    { x: 0.055, y: 0.018, z: -0.002, r: 0.048, sy: 0.94 },                   // temples — widest point
-    { x: -0.055, y: 0.018, z: -0.002, r: 0.048, sy: 0.94 },
-    { x: 0.050, y: -0.028, z: 0.018, r: 0.043, sz: 0.98 },                   // cheeks — narrower than the temples
-    { x: -0.050, y: -0.028, z: 0.018, r: 0.043, sz: 0.98 },
+    { x: 0.058, y: 0.014, z: -0.002, r: 0.049, sy: 0.96 },                   // temples — widest point
+    { x: -0.058, y: 0.014, z: -0.002, r: 0.049, sy: 0.96 },
+    { x: 0.051, y: -0.028, z: 0.016, r: 0.044, sz: 0.98 },                   // cheeks
+    { x: -0.051, y: -0.028, z: 0.016, r: 0.044, sz: 0.98 },
 
-    // ---- THE MUZZLE ----------------------------------------------------
-    // A real projecting snout in four steps, each one narrower than the last
-    // and each one sitting HIGHER than the last so the whole muzzle tips up.
-    // The failure this replaces is a flat face with two nostril dents: there
-    // was no forward volume at all, so there was nothing for the mouth line to
-    // sit on and nothing to cast a shadow under the jaw.
-    { x: 0, y: -0.024, z: 0.050, r: 0.051, sx: 0.90, sy: 0.84, sz: 0.94 },   // muzzle root
-    { x: 0, y: -0.022, z: 0.083, r: 0.040, sx: 0.76, sy: 0.74, sz: 0.92 },   // muzzle mid
-    { x: 0, y: -0.013, z: 0.109, r: 0.031, sx: 0.68, sy: 0.66, sz: 0.80 },   // snout — UPTURNED
-    { x: 0, y: 0.000, z: 0.121, r: 0.021, sx: 0.58, sy: 0.50, sz: 0.62 },    // nose pad, above the tip
-    // Bridge: a soft raised line from the glabella out to the nose pad, so the
-    // top of the muzzle is a form and not a dent between two eye sockets.
-    { x: 0, y: 0.012, z: 0.088, r: 0.020, sx: 0.52, sy: 0.48, sz: 1.15, strength: 0.44 },
-    // The crease where the muzzle leaves the cheek. This is the single edge that
-    // makes the snout read as a separate volume from the front. Deeper and
-    // longer than before: it is what separates snout from face in flat light.
-    { x: 0.043, y: -0.016, z: 0.066, r: 0.019, sx: 0.80, sy: 1.40, sz: 0.90, strength: -0.32 },
-    { x: -0.043, y: -0.016, z: 0.066, r: 0.019, sx: 0.80, sy: 1.40, sz: 0.90, strength: -0.32 },
+    // Muzzle: short, smooth, gently upturned. No nose pad, no bridge ridge,
+    // no cheek creases — the snout blends into the face the way soft vinyl
+    // does, and the smile line alone separates it visually.
+    { x: 0, y: -0.026, z: 0.048, r: 0.052, sx: 0.94, sy: 0.86, sz: 0.94 },   // muzzle root
+    { x: 0, y: -0.024, z: 0.080, r: 0.041, sx: 0.86, sy: 0.78, sz: 0.92 },   // muzzle mid
+    // Snout tip — BLUNT. Wider than deep, held high: pulled back and widened
+    // from the previous tip, which read as a pointed hook drooping downward in
+    // three-quarter view. HOME's muzzle ends in a soft rounded button.
+    { x: 0, y: -0.013, z: 0.096, r: 0.034, sx: 0.82, sy: 0.72, sz: 0.70 },
 
-    // ---- LOWER JAW -----------------------------------------------------
-    { x: 0, y: -0.054, z: 0.026, r: 0.045, sx: 0.98, sy: 0.54, sz: 1.02 },   // jaw
-    { x: 0, y: -0.051, z: 0.076, r: 0.033, sx: 0.82, sy: 0.50, sz: 0.94 },   // lower lip mass
-    { x: 0, y: -0.046, z: 0.106, r: 0.024, sx: 0.66, sy: 0.44, sz: 0.72 },   // chin, tucked under the snout
-    // Jawline: a shallow crease under the cheekbone, carried forward to the
-    // corner of the mouth so the lower jaw has an edge you can find in shadow.
-    { x: 0.048, y: -0.038, z: 0.024, r: 0.023, sx: 0.7, sy: 0.34, sz: 1.30, strength: -0.32 },
-    { x: -0.048, y: -0.038, z: 0.024, r: 0.023, sx: 0.7, sy: 0.34, sz: 1.30, strength: -0.32 },
-    { x: 0.034, y: -0.044, z: 0.080, r: 0.016, sx: 0.7, sy: 0.36, sz: 1.05, strength: -0.20 },
-    { x: -0.034, y: -0.044, z: 0.080, r: 0.016, sx: 0.7, sy: 0.36, sz: 1.05, strength: -0.20 },
+    // Lower jaw: one smooth pass, no creases.
+    { x: 0, y: -0.054, z: 0.024, r: 0.045, sx: 0.98, sy: 0.56, sz: 1.00 },   // jaw
+    { x: 0, y: -0.048, z: 0.070, r: 0.030, sx: 0.82, sy: 0.48, sz: 0.90 },   // lower lip mass
+    // Chin, tucked under AND behind the open mouth's floor: at its old spot
+    // (y -0.041, z 0.096) its front face poked through the dark interior as
+    // an orange bump in the bottom-centre of the grin.
+    { x: 0, y: -0.046, z: 0.088, r: 0.019, sx: 0.64, sy: 0.42, sz: 0.66 },
 
     // Kill the backward teardrop: carve behind and below the occiput so the
     // back of the skull drops away vertically into the neck.
     { x: 0, y: -0.014, z: -0.058, r: 0.052, sy: 1.20, sz: 0.85, strength: -0.62 },
-
-    // ---- EYE SOCKETS ---------------------------------------------------
-    // Deep, tight craters set CLOSER TOGETHER and HIGHER than before. The eye
-    // ball is seated behind the socket floor by the caller so only a cap
-    // clears the skin; that is only possible if the crater is genuinely deep,
-    // hence -0.92 rather than the timid -0.54 that left the eyes standing off
-    // the face like headlights.
-    // A wide, shallow almond rather than a round pit: a circular crater leaves a
-    // circular rim, and a circular rim above the eye renders as a drawn wrinkle
-    // arc on the forehead. Flattening it in y and stretching it in x puts the
-    // rim tight against the lid where it belongs.
-    { x: 0.0385, y: 0.0275, z: 0.0500, r: 0.0285, sx: 1.14, sy: 0.74, sz: 0.86, strength: -0.66 },
-    { x: -0.0385, y: 0.0275, z: 0.0500, r: 0.0285, sx: 1.14, sy: 0.74, sz: 0.86, strength: -0.66 },
-    // Upper lid fold: a soft positive ridge in SKIN, wider than the eye and
-    // level rather than angled. This is the whole of the lid — a thin fold of
-    // face, never a dark band, and never a brow bar. Strength is deliberately
-    // LOW: at 0.40 the fold's outer edge met the socket rim and rendered as a
-    // hard arc across the forehead — a pair of frown wrinkles, which is the one
-    // expression this face must not have.
-    { x: 0.0385, y: 0.0485, z: 0.046, r: 0.019, sx: 1.30, sy: 0.36, sz: 0.68, strength: 0.22 },
-    { x: -0.0385, y: 0.0485, z: 0.046, r: 0.019, sx: 1.30, sy: 0.36, sz: 0.68, strength: 0.22 },
-    // Lower lid: a whisper of cheek pushed up under the eye, which is what
-    // makes a small eye read as warm rather than beady.
-    { x: 0.0385, y: 0.0085, z: 0.0495, r: 0.017, sx: 1.15, sy: 0.40, sz: 0.70, strength: 0.26 },
-    { x: -0.0385, y: 0.0085, z: 0.0495, r: 0.017, sx: 1.15, sy: 0.40, sz: 0.70, strength: 0.26 },
-
     // neck notch, matching the body's
     { x: 0, y: -0.055, z: -0.036, r: 0.082, sy: 0.28, strength: -0.62 },
-    // nostril dents — on top of the upturned nose pad, mirrored in x
-    { x: 0.0120, y: 0.008, z: 0.127, r: 0.0075, strength: -0.55 },
-    { x: -0.0120, y: 0.008, z: 0.127, r: 0.0075, strength: -0.55 },
   ];
-  // Mouth slot — a chain of flattened negative balls following the arc, cut
-  // deep enough to be a genuine crease with an interior rather than a line.
-  // A finer crease than before: at -0.68 with a 0.24 y-squash the slot opened
-  // into a wide dark trough that read as a heavy frowning lip from the front.
-  // Shallower and thinner turns it back into a drawn line that still has real
-  // depth at the corners.
-  for (let i = 0; i <= 20; i++) {
-    const a = lerp(-1.24, 1.24, i / 20);
+  // Smile crease — a very shallow thin groove along the mouth arc. It only has
+  // to catch a little shadow; the mouth-opening meshes below do the legibility.
+  for (let i = 0; i <= 22; i++) {
+    const a = lerp(-1.47, 1.47, i / 22);
     const p = mouthPoint(a);
-    // The corners cut deeper than the middle. A constant-depth slot fades out
-    // where it wraps onto the side of the muzzle, so the line looked like a
-    // short dash across the tip instead of a mouth that runs the width of the
-    // face and turns up at each end.
-    const k = Math.abs(a) / 1.24;
     headBalls.push({
       x: p.x, y: p.y, z: p.z,
-      r: lerp(0.0150, 0.0175, k), sy: 0.20, sz: 0.60,
-      strength: -lerp(0.50, 0.78, k * k),
+      r: 0.0105, sy: 0.22, sz: 0.55,
+      strength: -0.22,
     });
   }
+  // Open the sculpt BETWEEN the lips: small, gentle carves centred on the gap
+  // pull the skin back a touch so the dark interior strip reads recessed. Kept
+  // deliberately weak and buried — the first attempt used fat strong carves
+  // and their crater rims rolled the skin into puffy human lips.
+  // Carve centres hug the skin (the line itself is ON the probed surface, so
+  // a centre a full gap behind it never touches the isosurface) and are sized
+  // to pull the whole between-the-lips band a few millimetres back — the dark
+  // interior strip must be the nearest surface across the entire crescent, or
+  // the skin shows through the middle and the grin reads as an outline.
+  for (let i = 0; i <= 18; i++) {
+    const a = lerp(-1.25, 1.25, i / 18);
+    const gap = mouthGap(a);
+    if (gap < 0.010) continue;
+    const p = mouthPoint(a);
+    headBalls.push({
+      x: p.x, y: p.y - gap * 0.6, z: p.z - gap * 0.5,
+      r: 0.005 + gap * 0.38, sy: 1.0, sz: 0.7,
+      strength: -0.55,
+    });
+  }
+  // Shallow centred recess on the lower-lip front. The chin region bulges
+  // forward at the centreline, which lifted the skin/interior crossing line
+  // into an orange bump intruding on the bottom-centre of the grin.
+  headBalls.push({
+    x: 0, y: -0.057, z: 0.100, r: 0.015, sx: 1.5, sy: 0.6, sz: 0.7,
+    strength: -0.30,
+  });
 
   const HEAD_RES = 66;
   let headGeo = metaSurface(headBalls, { resolution: HEAD_RES, smooth: 0.92, padding: 0.024 });
@@ -929,16 +951,11 @@ export function buildCharmander(): Creature {
   headGeo = weldDecimate(headGeo, 0.0080);
   headGeo.setAttribute('uv', boxProjectedUV(headGeo, 17));
 
-  // Cream wraps under the jaw and up the throat to meet the body's belly band.
-  // Same construction as the torso: an angle about a centre line, this time
-  // measured from straight DOWN, with a fore-aft window that closes the field
-  // before it can climb the muzzle (a pelican's bill) or the nape (a bib).
-  const THROAT_HALF: [number, number][] = [
-    [-0.060, 0.00], [-0.026, 0.42], [0.012, 0.74], [0.056, 0.76],
-    [0.092, 0.58], [0.116, 0.24], [0.134, 0.00],
-  ];
-  const headMark: MarkField = (x, y, z) =>
-    ramp(THROAT_HALF, z) - Math.abs(Math.atan2(x, 0.004 - y));
+  // The head carries NO cream at all. In both references the cream patch
+  // starts at the chest — the chin and throat are plain orange, and painting
+  // cream up the chin is exactly what produced the scraggly discoloured beard
+  // the review flagged. Field is constant-negative: pure skin.
+  const headMark: MarkField = () => -1;
   markSculpt(headGeo, new THREE.Vector3(0, 0, 0.01), headMark, 0.20, 6);
 
   const head = new THREE.Mesh(headGeo, painted);
@@ -947,44 +964,124 @@ export function buildCharmander(): Creature {
   rig.head.add(head);
 
   /* ---- Eyes -------------------------------------------------------- */
-  // SMALL, CLOSE, HIGH, AND SUNK. The radius is two thirds of what it was, the
-  // pair is 26% closer together, they sit 7mm higher, and — the part that
-  // actually fixes the bug-eyed read — the centre z is BEHIND the socket floor,
-  // so the head's own surface clips the ball and only a shallow cap of iris is
-  // ever visible. Nothing here can render as a protruding sphere.
-  const EYE_R = 0.0200;
+  // LARGE vertical ovals on the FRONT of the face, close together, mostly
+  // embedded so they read as part of the head rather than as marbles. The
+  // eye is roughly a third of the head's height — this is the single biggest
+  // likeness lever the character has.
+  const EYE_W = 0.0242;
+  const EYE_H = 0.0368;
   for (const s of [1, -1]) {
-    const { holder, lid } = buildEye(EYE_R, s, 0.10, plainSkin);
-    holder.position.set(s * 0.0385, 0.0290, 0.0482);
+    const { holder, lid } = buildEye(EYE_W, EYE_H, s, 0.30, plainSkin);
+    holder.position.set(s * 0.0350, 0.0250, 0.0630);
     rig.head.add(holder);
     rig.eyes.push(holder);
     rig.eyelids.push(lid);
   }
 
-  /* ---- Mouth interior, teeth, nostrils ----------------------------- */
-  // A dark lens sitting just inside the slot. The slot itself is a deep crease
-  // in the sculpt; this is what makes the gap read as depth rather than as a
-  // painted line, and it never protrudes past the lip.
-  const inner = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 8), mouthMat);
-  // Sunk well behind the lip line. Previously it stood proud of the snout and
-  // rendered as a dark brown blob on the tip of the muzzle — a smear, not a
-  // mouth. It must only ever be glimpsed through the crease.
-  inner.scale.set(0.036, 0.0062, 0.014);
-  inner.position.set(0, -0.0325, 0.1085);
-  inner.rotation.x = -0.10;
-  rig.head.add(inner);
+  /* ---- Mouth: the wide open grin ------------------------------------ */
+  // The HOME render's single most identifying feature. Two parametric strips
+  // hug the muzzle between the lips: a warm dark interior filling the crescent
+  // gap, and a thin white band with tiny tooth notches hanging off the upper
+  // lip edge. The crescent is WIDE and SHALLOW with upturned corners — an
+  // earlier build's round pit with fangs read as a horror mouth, so the gap is
+  // capped low relative to the mouth's width and the teeth stay a millimetre
+  // band, never individual fangs.
+  const mouthStrip = (
+    n: number, m: number,
+    f: (a: number, t: number) => THREE.Vector3,
+  ): THREE.BufferGeometry => {
+    const pos: number[] = [];
+    for (let j = 0; j <= m; j++) {
+      for (let i = 0; i <= n; i++) {
+        const p = f(lerp(-MOUTH_A, MOUTH_A, i / n), j / m);
+        pos.push(p.x, p.y, p.z);
+      }
+    }
+    const idx: number[] = [];
+    for (let j = 0; j < m; j++) {
+      for (let i = 0; i < n; i++) {
+        const r0 = j * (n + 1) + i;
+        const r1 = r0 + n + 1;
+        idx.push(r0, r1, r0 + 1, r0 + 1, r1, r1 + 1);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  };
 
+  // Interior: upper edge rides the lip line; the lower edge sags by the gap
+  // and RECEDES in z toward the jaw, because the mouth floor sits well behind
+  // the upper lip — keeping z constant left the chin wearing a dark shovel.
+  // The top edge rides slightly ABOVE the lip line so the dark fill swallows
+  // the smile crease's shiny lower rim — left exposed, that rim catches the
+  // studio key as a white "lipstick" line.
+  const interiorGeo = mouthStrip(40, 6, (a, t) => {
+    const u = mouthPoint(a);
+    const gap = mouthGap(a);
+    const p = new THREE.Vector3(
+      u.x * (1 - 0.08 * t),
+      u.y + 0.003 * (1 - t) - gap * t,
+      // Curved floor: stays PROUD of the lower-lip skin through the middle of
+      // the opening and only dives behind it in the last stretch, so the
+      // skin/floor crossing line — the visible bottom edge of the dark — is
+      // a steep, clean intersection instead of a grazing one.
+      u.z - gap * (0.55 * t + 0.65 * t ** 4),
+    );
+    return p.addScaledVector(mouthOut(a), mouthLift(a));
+  });
+  // Fully rough, near-zero specular: the opening must read as a flat matte
+  // dark crescent set into the skin. Any sheen here reads as glossy lips.
+  const interiorMat = new THREE.MeshPhysicalMaterial({
+    color: 0x531d0d, roughness: 1.0, specularIntensity: 0.04,
+    side: THREE.DoubleSide,
+  });
+  const interior = new THREE.Mesh(interiorGeo, interiorMat);
+  interior.castShadow = false;
+  rig.head.add(interior);
+
+  // Teeth: a continuous white band whose lower edge zigzags — reads as a row
+  // of tiny teeth along the upper lip without ever becoming discrete fangs.
+  // The band FADES OUT well before the corners — carried to the ends it
+  // rendered as a white-lipstick outline around the whole smile. Where it
+  // lives, it hangs a hair below the lip edge with dark interior showing above
+  // it, so it reads as teeth inside a mouth rather than as a painted lip.
+  const TEETH = 7;
+  const toothDepth = (a: number): number => {
+    const saw = Math.abs((((a / MOUTH_A) * TEETH + TEETH) % 2) - 1); // 1 at notch tips
+    // Fades to nothing well inside the corners — a HINT of teeth along the
+    // upper edge, never a white outline ring around the opening. The band
+    // covers only the central ~60% of the grin, and it is a real BAND: a
+    // sub-millimetre depth renders as a one-pixel aliased wire floating in
+    // the dark, which is worse than no teeth at all.
+    const fade = clamp((mouthGap(a) / MOUTH_GAP - 0.78) / 0.15, 0, 1);
+    return fade * (0.0013 + 0.0010 * saw);
+  };
+  const teethGeo = mouthStrip(72, 1, (a, t) => {
+    const u = mouthPoint(a);
+    const d = toothDepth(a) * t;
+    // Starts right AT the visible top edge of the opening and hangs down,
+    // so the strip reads as teeth under the upper lip, not a wire mid-mouth.
+    return new THREE.Vector3(u.x, u.y + 0.0012 - d, u.z - d * 1.1)
+      .addScaledVector(mouthOut(a), mouthLift(a) + 0.0006);
+  });
+  const teeth = new THREE.Mesh(
+    teethGeo,
+    new THREE.MeshStandardMaterial({
+      color: 0xe9e4d6, roughness: 0.8, side: THREE.DoubleSide,
+    }),
+  );
+  teeth.castShadow = false;
+  rig.head.add(teeth);
+
+  // Two tiny nostril dots on the smooth snout — dots, not a nose.
+  const nostrilMat = new THREE.MeshStandardMaterial({ color: 0x7a3410, roughness: 0.85 });
   for (const s of [1, -1]) {
-    // Two small fangs, and small is the whole point: any bigger and the
-    // friendly smile turns into a snarl.
-    const tooth = new THREE.Mesh(clawGeometry(0.0042, 0.0021), toothMat);
-    tooth.position.set(s * 0.0215, -0.0275, 0.1235);
-    tooth.rotation.set(Math.PI * 0.97, 0, s * 0.20);
-    rig.head.add(tooth);
-
-    const n = new THREE.Mesh(new THREE.SphereGeometry(0.0037, 8, 6), nostrilMat);
-    n.position.set(s * 0.0120, 0.0075, 0.1305);
-    n.scale.set(1, 0.85, 0.55);
+    const n = new THREE.Mesh(new THREE.SphereGeometry(0.0017, 8, 6), nostrilMat);
+    n.position.set(s * 0.0100, 0.0040, 0.1150);
+    n.scale.set(1, 0.8, 0.4);
     rig.head.add(n);
   }
 
@@ -1122,21 +1219,27 @@ export function buildCharmander(): Creature {
   // rather than as a lizard carrying a flame. The core opacity comes down too —
   // the hottest part should be a small bright heart inside an orange body, not
   // a blown-out white lozenge.
-  const FH = 0.205;
+  // HOME's flame is a PLUMP red-to-yellow drop: a wide yellow base and core,
+  // orange body, red crown. Every shell is hot-at-the-base / cool-at-the-top,
+  // so the gradient runs yellow -> orange -> red going up, and the widest
+  // shells got wider while the heights barely moved — fat, not tall.
+  const FH = 0.21;
   const shells: FlameShell[] = [
     // Wide soft halo. This replaces the glow billboard entirely: a sprite has
     // corners and an alpha rectangle, a Fresnel-dissolved shell has neither.
-    flameShell(FH * 1.22, 0.106, 0xff8a34, 0xd8500e, 2.9, 0.28, 1.3, 0.55, 2.0, 0.42),
-    flameShell(FH, 0.068, 0xff7d16, 0xe64a08, 1.35, 0.80, 0.0, 1.00, 3.0),
-    flameShell(FH * 0.86, 0.048, 0xffc23e, 0xff7412, 1.75, 0.82, 2.4, 0.86, 4.0),
-    flameShell(FH * 0.60, 0.030, 0xfff6e2, 0xffc75e, 1.55, 0.70, 5.1, 0.70, 5.0),
+    flameShell(FH * 1.20, 0.128, 0xff9c2e, 0xd83208, 2.9, 0.22, 1.3, 0.55, 2.0, 0.50),
+    flameShell(FH, 0.090, 0xffc63a, 0xe63a06, 1.35, 0.82, 0.0, 1.00, 3.0, 0.62),
+    flameShell(FH * 0.85, 0.064, 0xffdf55, 0xff5a10, 1.75, 0.84, 2.4, 0.86, 4.0, 0.60),
+    // Yellow core — short and fat, so the heart of the fire reads yellow the
+    // way HOME's does, not white-hot.
+    flameShell(FH * 0.58, 0.045, 0xffee9a, 0xffb62e, 1.55, 0.75, 5.1, 0.70, 5.0, 0.58),
   ];
   // A fifth, narrow tongue at a different lobe count and phase. Its only job is
   // to break the closed lathe's outline so the fire is not a solid cone as a
   // black shape. It is NOT rotated off-axis — the previous version was, and
   // rotating a heavily deformed lathe is what folded it into the straight
   // polygonal edges the review caught.
-  shells.push(flameShell(FH * 1.06, 0.032, 0xffab2e, 0xff6a10, 1.9, 0.48, 3.7, 1.20, 7.0, 0.30));
+  shells.push(flameShell(FH * 1.04, 0.040, 0xffc33e, 0xff4a0e, 1.9, 0.48, 3.7, 1.20, 7.0, 0.34));
   for (const s of shells) flameGroup.add(s.mesh);
 
   // ---- The flame is a light source --------------------------------

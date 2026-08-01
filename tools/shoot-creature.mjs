@@ -26,6 +26,7 @@ let angles = ['front', 'three_quarter', 'side', 'back'];
 for (let i = 2; i < process.argv.length; i++) {
   const a = process.argv[i];
   if (a === '--subject') subjects = process.argv[++i].split(',');
+  else if (a === '--url') args.url = process.argv[++i];
   else if (a === '--angles') angles = process.argv[++i].split(',');
   else if (a === '--out') args.out = process.argv[++i];
   else if (a === '--width') args.width = Number(process.argv[++i]);

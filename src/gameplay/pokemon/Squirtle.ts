@@ -114,7 +114,11 @@ function onSkull(mesh: THREE.Mesh, dir: THREE.Vector3, fallback = 0.09): THREE.V
  *             makes the upper lid heavier than the lower one
  */
 function eyeAperture(radius: number, ax: number, ay: number, drop: number): THREE.BufferGeometry {
-  const geo = new THREE.SphereGeometry(radius, 20, 14);
+  // Densely tessellated: the aperture is cut along vertex boundaries, and at
+  // 20x14 the jagged cut both showed as a dark saw-tooth line where the lid
+  // rim crosses the iris and aliased into pinholes that leaked red speckles
+  // onto the cheek.
+  const geo = new THREE.SphereGeometry(radius, 40, 28);
   geo.deleteAttribute('uv');
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const p = new THREE.Vector3();
@@ -166,7 +170,7 @@ const RIM = 0.94;
  * bottom. This is what makes the boundary an ellipse: A = RIM - RIM_ELL·cos2φ,
  * so 0.74 rad at the flanks and 1.14 at top and bottom.
  */
-const RIM_ELL = 0.20;
+const RIM_ELL = 0.37;
 
 /**
  * Depth of the plastron plate, and how much it domes.
@@ -178,7 +182,7 @@ const RIM_ELL = 0.20;
  * the arms, which is the single loudest fault in the previous build.
  */
 const PLATE_Z = 0.70;
-const PLATE_GROOVE = 0.030;
+const PLATE_GROOVE = 0.022;
 
 /**
  * Sculpts and paints the whole shell in one pass over a unit sphere.
@@ -219,9 +223,9 @@ function shellSurface(geo: THREE.BufferGeometry): void {
   // Warm reddish-brown carapace, not the near-black chocolate of the last
   // pass, and a genuinely pale-yellow ridge that separates it from the cream
   // plate rather than letting the two just abut.
-  const brown = new THREE.Color(0x96501f);
-  const cream = new THREE.Color(0xd6ba72);
-  const ridge = new THREE.Color(0xf8e28c);
+  const brown = new THREE.Color(0xb5651e);
+  const cream = new THREE.Color(0xe8ce8a);
+  const ridge = new THREE.Color(0xf4e5ab);
   const c = new THREE.Color();
 
   const pos = geo.attributes.position as THREE.BufferAttribute;
@@ -237,7 +241,11 @@ function shellSurface(geo: THREE.BufferGeometry): void {
     // under, not a pinstripe. Twelve marginal scutes scallop the crest so it
     // reads as grown horn rather than a moulded hoop.
     const phi = Math.atan2(p.y, p.x);
-    const scallop = 1 - 0.16 * (0.5 - 0.5 * Math.cos(12 * phi));
+    const scallop = 1 - 0.10 * (0.5 - 0.5 * Math.cos(12 * phi));
+    // The ridge dies away near the neck opening: without this the raised crest
+    // continues right up over the shoulders and reads as a white shirt collar
+    // standing off the shell.
+    const neckFade = smoothstep(0.30, 0.62, Math.acos(clamp(p.y, -1, 1)));
     // The boundary is an ELLIPSE, not a circle of latitude: it runs well
     // forward of the equator at the flanks and close to it above and below.
     // That is the whole trick for reading the shell from the front — the
@@ -245,19 +253,30 @@ function shellSurface(geo: THREE.BufferGeometry): void {
     // frames the plastron instead of hiding in a five-pixel band at the
     // silhouette where it was completely invisible.
     const A = RIM - RIM_ELL * Math.cos(2 * phi);
-    const k = (a - A) / 0.185;
-    const raw = Math.exp(-k * k);
+    // Narrow gaussian: the marginal band is a thin, clean hoop in the HOME
+    // render, and the previous 0.185 sigma smeared pale ridge colour a third
+    // of the way across the carapace.
+    const k = (a - A) / 0.14;
+    const raw = Math.exp(-k * k) * neckFade;
     const bump = raw * scallop;
+
+    // Where the brown carapace begins. The pale marginal band runs from the
+    // ridge nearly to the silhouette at the FLANKS, so a front view shows
+    // cream plate, cream band, and only a thin crisp orange trim at the
+    // shell's edge — the HOME read. At top and bottom the boundary ellipse
+    // already sits near the equator, so the band stays narrow there and the
+    // carapace still owns the whole dome in side view.
+    const B = A + 0.10 + 0.40 * (0.5 + 0.5 * Math.cos(2 * phi));
 
     /* ---- Plastron segment grooves ----------------------------------- */
     const inPlastron = smoothstep(A - 0.04, A - 0.52, a);
     let seg = 1;
     for (const y of [0.46, 0.15, -0.17, -0.48]) {
-      seg = Math.min(seg, smoothstep(0.006, 0.017, Math.abs(p.y - y)));
+      seg = Math.min(seg, smoothstep(0.0035, 0.010, Math.abs(p.y - y)));
     }
 
     /* ---- Carapace scutes -------------------------------------------- */
-    const inCarapace = smoothstep(A + 0.10, A + 0.42, a);
+    const inCarapace = smoothstep(B - 0.02, B + 0.30, a);
     let d1 = 4;
     let d2 = 4;
     let win = 0;
@@ -276,13 +295,13 @@ function shellSurface(geo: THREE.BufferGeometry): void {
     // A narrow groove seats the ridge against the plate. Without it the two
     // pale yellows sit at the same height and the ridge simply disappears
     // into the plastron under a broad key light.
-    const gk = (a - (A - 0.26)) / 0.085;
+    const gk = (a - (A - 0.20)) / 0.07;
     const seat = Math.exp(-gk * gk);
 
     const r =
       1
-      + bump * 0.150
-      - seat * 0.034
+      + bump * 0.125
+      - seat * 0.026
       + inCarapace * 0.045 * bevel;
 
     let X = p.x * r;
@@ -310,24 +329,28 @@ function shellSurface(geo: THREE.BufferGeometry): void {
     pos.setXYZ(i, X, Y, Z);
 
     /* ---- Colour ------------------------------------------------------ */
-    const brownMix = smoothstep(A + 0.02, A + 0.17, a);
-    c.copy(cream).lerp(brown, brownMix);
+    // CRISP band boundaries. The band-to-orange transition happens in seven
+    // hundredths of a radian — the previous 0.15 rad ramp is what read as a
+    // diffuse orange smear around the plate's edge.
+    const brownMix = smoothstep(B - 0.02, B + 0.05, a);
+    const bandMask = smoothstep(A - 0.03, A + 0.07, a) * (1 - brownMix);
+    c.copy(cream).lerp(ridge, bandMask);
+    c.lerp(brown, brownMix);
     // Segment lines are grown horn, not ink: they darken toward the carapace
     // hue rather than toward black.
-    c.lerp(brown, (1 - seg) * inPlastron * 0.45);
-    // The ridge owns its own hue wherever it is proud of the surface.
-    c.lerp(ridge, Math.min(1, raw * 2.3));
+    c.lerp(brown, (1 - seg) * inPlastron * 0.34);
 
     const vary = 1 + (((win * 37) % 11) / 11 - 0.5) * 0.09;
     const carapaceShade = lerp(0.56, 1.04, bevel) * vary;
-    const plastronShade = lerp(0.40, 0.90, seg);
+    // Lines darken gently — a thin clean groove, not a wide dark trench.
+    const plastronShade = lerp(0.58, 0.92, seg);
     // Crest of the ridge catches light; the scallop notches sit in shadow.
-    const rimShade = 1.12 + bump * 0.14 - (1 - scallop) * raw * 0.9;
+    const rimShade = 1.05 + bump * 0.10 - (1 - scallop) * raw * 0.6;
 
     let shade = lerp(1, plastronShade, inPlastron);
     shade = lerp(shade, carapaceShade, inCarapace);
     shade = lerp(shade, rimShade, Math.min(1, raw * 1.3));
-    shade *= 1 - seat * 0.34;
+    shade *= 1 - seat * 0.22;
 
     col[i * 3] = c.r * shade;
     col[i * 3 + 1] = c.g * shade;
@@ -395,8 +418,8 @@ export function buildSquirtle(): Creature {
   // Matte. The shell is the only remotely hard thing on this character; when
   // the skin is glossy too the whole model reads as one inflatable pool toy.
   const skin = creatureSkin({
-    color: 0x3ea3dd,
-    subsurface: 0x2f7fbc,
+    color: 0x3da6e3,
+    subsurface: 0x287bbc,
     wrap: 0.16,
     rim: 0.05,
     roughness: 0.90,
@@ -444,13 +467,17 @@ export function buildSquirtle(): Creature {
     clearcoat: 0.3,
     vertexColors: true,
   });
+  // Nostrils only. Near-black warm brown — the old grey-blue read as two
+  // painted dots of a different material sitting on the muzzle.
   const darkMat = new THREE.MeshStandardMaterial({
-    color: 0x123448,
-    roughness: 0.6,
+    color: 0x1d1410,
+    roughness: 0.7,
     vertexColors: true,
   });
+  // Dark BROWN, not reddish — the HOME mouth line is the colour of dark
+  // chocolate, and the previous maroon read as lipstick.
   const mouthMat = new THREE.MeshStandardMaterial({
-    color: 0x35141a,
+    color: 0x2c1b10,
     roughness: 0.75,
     vertexColors: true,
   });
@@ -459,13 +486,16 @@ export function buildSquirtle(): Creature {
   // Wide, but no longer the tallest thing in the room. The whole character is
   // half a metre top to toe, which puts it level with Charmander instead of
   // looming over both of its stablemates.
-  const SX = 0.170;
-  const SY = 0.142;
-  const SZ = 0.174;
+  // Shrunk relative to the head: in the HOME render the shell is only ~1.3x
+  // the head's width, and the previous 0.34 m shell against a 0.16 m head made
+  // the character read as 70% shell.
+  const SX = 0.142;
+  const SY = 0.124;
+  const SZ = 0.148;
   const TILT = 0.16;
 
   const shell = new THREE.Group();
-  shell.position.set(0, 0.232, -0.016);
+  shell.position.set(0, 0.224, -0.014);
   shell.rotation.x = TILT;
   rig.body.add(shell);
 
@@ -493,14 +523,14 @@ export function buildSquirtle(): Creature {
   // Swung well out to the side so the tail can clear the shell's own
   // silhouette; when the socket was at the centre-rear the whole curl lived
   // inside the shell's footprint and could not be seen from any front angle.
-  const tailDir = toLocal(0.80, -0.24, -0.55);
+  const tailDir = toLocal(0.52, -0.30, -0.80);
 
   shellOpening(shellGeo, neckDir, 0.17, 0.30, 0.11);
   shellOpening(shellGeo, armDir(1), 0.14, 0.26, 0.07);
   shellOpening(shellGeo, armDir(-1), 0.14, 0.26, 0.07);
   shellOpening(shellGeo, legDir(1), 0.14, 0.26, 0.08);
   shellOpening(shellGeo, legDir(-1), 0.14, 0.26, 0.08);
-  shellOpening(shellGeo, tailDir, 0.13, 0.24, 0.10);
+  shellOpening(shellGeo, tailDir, 0.11, 0.21, 0.09);
 
   shellGeo.scale(SX, SY, SZ);
   shellGeo.computeVertexNormals();
@@ -519,18 +549,19 @@ export function buildSquirtle(): Creature {
     new THREE.Mesh(
       metaSurface(
         [
-          { x: 0, y: 0.232, z: -0.020, r: 0.072, sx: 1.34, sy: 1.12, sz: 0.66 },
-          { x: 0, y: 0.294, z: -0.016, r: 0.058, sx: 1.16, sy: 0.86, sz: 0.66 },
-          { x: 0, y: 0.172, z: -0.016, r: 0.060, sx: 1.16, sy: 0.80, sz: 0.66 },
+          { x: 0, y: 0.224, z: -0.018, r: 0.064, sx: 1.30, sy: 1.10, sz: 0.66 },
+          { x: 0, y: 0.276, z: -0.014, r: 0.052, sx: 1.14, sy: 0.86, sz: 0.66 },
+          { x: 0, y: 0.170, z: -0.014, r: 0.054, sx: 1.14, sy: 0.80, sz: 0.66 },
           // Collar: proud of the shell's neck lip, so the fold reads as a roll
           // of skin bulging out of the opening rather than a peg in a hole.
-          { x: 0, y: 0.340, z: 0.020, r: 0.050, sx: 1.10, sy: 0.66, sz: 0.98 },
-          { x: 0, y: 0.378, z: 0.024, r: 0.041, sx: 1.00, sy: 0.88 },
-          { x: 0, y: 0.414, z: 0.026, r: 0.036 },
+          // SHORT — the head sits close over the shell; the previous column
+          // read as a giraffe neck.
+          { x: 0, y: 0.322, z: 0.018, r: 0.044, sx: 1.10, sy: 0.66, sz: 0.98 },
+          { x: 0, y: 0.352, z: 0.022, r: 0.038, sx: 1.00, sy: 0.88 },
           // Blends into the jaw mass of the head, which overlaps this.
-          { x: 0, y: 0.442, z: 0.026, r: 0.034 },
+          { x: 0, y: 0.384, z: 0.024, r: 0.035 },
         ],
-        { resolution: 36, smooth: 0.92 },
+        { resolution: 44, smooth: 0.92 },
       ),
       skin,
     ),
@@ -546,15 +577,19 @@ export function buildSquirtle(): Creature {
   // Lifted clear of the shell collar so there is a neck to see. The previous
   // build seated the jaw below the top of the carapace, which is why the head
   // read as a ball resting on the shell.
-  rig.head.position.set(0, 0.466, 0.024);
+  rig.head.position.set(0, 0.450, 0.026);
 
-  const HS = 0.705;
+  // Enlarged ~35% over the previous build: the head is the character. In the
+  // HOME render it is a third of the standing height and nearly as wide as the
+  // shell.
+  const HS = 0.95;
   const rawHead: Ball[] = [
-    { x: 0, y: 0, z: 0, r: 0.095, sx: 1.14, sy: 1.0, sz: 1.0 },
-    { x: 0, y: 0.016, z: -0.026, r: 0.066, sx: 1.06, sz: 0.94 },
+    // Slightly wider than tall — the official head is a squashed dome.
+    { x: 0, y: 0, z: 0, r: 0.095, sx: 1.24, sy: 1.0, sz: 1.0 },
+    { x: 0, y: 0.016, z: -0.026, r: 0.066, sx: 1.14, sz: 0.94 },
     // Core mass behind the eyes. Without it the two socket carves meet in the
     // middle of the skull and open a tunnel you can see the sclera through.
-    { x: 0, y: 0.008, z: 0.020, r: 0.072, sx: 1.24, sy: 1.0, sz: 0.88 },
+    { x: 0, y: 0.008, z: 0.020, r: 0.072, sx: 1.32, sy: 1.0, sz: 0.88 },
     { x: 0, y: -0.004, z: 0.062, r: 0.056, sx: 1.30, sy: 0.92, sz: 0.78 },
     // Muzzle and the jaw beneath it: the two masses that give a profile, and
     // the platform the mouth line is cut across. Pushed further forward and
@@ -565,44 +600,56 @@ export function buildSquirtle(): Creature {
     { x: 0, y: -0.064, z: -0.004, r: 0.052, sx: 1.02, sy: 0.60 },
     // Cranial ridge: a low crown running front to back so the skull is not a
     // sphere from above.
-    { x: 0, y: 0.062, z: 0.010, r: 0.042, sx: 0.62, sy: 0.55, sz: 1.7 },
+    { x: 0, y: 0.060, z: 0.010, r: 0.038, sx: 0.66, sy: 0.50, sz: 1.6 },
   ];
   for (const s of [1, -1]) {
-    // Cheek, and the brow ridge that gives the eye a hard edge above it.
+    // Cheek mass. No brow-ridge balls: at this resolution they read as horn
+    // nubs on the crown, and the official head is one smooth dome.
     rawHead.push({ x: s * 0.062, y: -0.030, z: 0.014, r: 0.052, sy: 0.94 });
-    rawHead.push({ x: s * 0.048, y: 0.074, z: 0.070, r: 0.020, sx: 1.30, sy: 0.44, sz: 0.9 });
     // Eye socket. The eyeball has to sit INTO the skull, so this carve is what
     // makes the difference between an inset eye and a bug eye. Moved up and
     // inboard to follow the new eye axis, and kept shallow and small so it is a
     // socket rather than a dent.
-    rawHead.push({ x: s * 0.038, y: 0.046, z: 0.132, r: 0.049, sy: 0.90, sz: 0.72, strength: -0.42 });
+    rawHead.push({ x: s * 0.038, y: 0.040, z: 0.132, r: 0.058, sy: 1.02, sz: 0.72, strength: -0.30 });
   }
   // Mouth trench and the crease under the nose. A shallow negative here gives
   // the lip something to sit in, so the mouth is a feature of the form rather
-  // than a wire lying on it.
-  rawHead.push({ x: 0, y: -0.046, z: 0.146, r: 0.036, sx: 1.9, sy: 0.36, strength: -0.40 });
+  // than a wire lying on it. Kept subtle — a deep trench reads as an open jaw
+  // from the side.
+  rawHead.push({ x: 0, y: -0.046, z: 0.146, r: 0.036, sx: 1.9, sy: 0.36, strength: -0.18 });
 
-  const headMesh = new THREE.Mesh(metaSurface(scaleBalls(rawHead, HS), { resolution: 52, smooth: 0.9 }), skin);
+  const headMesh = new THREE.Mesh(metaSurface(scaleBalls(rawHead, HS), { resolution: 56, smooth: 0.9 }), skin);
 
   /* ---- Facial landmarks, measured off the real surface ---------------- */
   // 23.5 mm across rather than 33.5, brought in from a 0.36 rad splay to 0.27
   // and lifted from 0.16 to 0.34 on the head's own axis. Small, close-set and
   // high is what reads as a friendly animal; big, wide and low is a startled
   // Muppet, which is precisely what this was.
-  const EYE_R = 0.0280;
-  const SPLAY = 0.29;
-  const SQUASH = 0.88;
+  // LARGE and wide open — the eyes are what make it Squirtle. The eyeball is a
+  // third of the head's height, the aperture is taller than it is wide, and
+  // the iris fills nearly all of it.
+  // Enlarged 12% (0.0345 -> 0.0386): in the HOME render the eyes nearly reach
+  // the head's side silhouette, and at the old size they read a notch too
+  // small. Everything on the eye — iris, pupil, catchlight, lid aperture,
+  // fold, blink shell, seat depth — is derived from EYE_R, so the hard-won
+  // internal proportions scale together untouched.
+  const EYE_R = 0.0386;
+  // Splayed a touch wider (0.31 -> 0.33) with the bigger eyes: at 0.31 the
+  // enlarged fold shells met over the nose bridge and pinched a faint knitted
+  // crease between the inner corners.
+  const SPLAY = 0.33;
+  const SQUASH = 1.06;
 
   const eyeDir = (s: number): THREE.Vector3 =>
-    new THREE.Vector3(Math.sin(s * SPLAY), 0.30, Math.cos(SPLAY)).normalize();
+    new THREE.Vector3(Math.sin(s * SPLAY), 0.28, Math.cos(SPLAY)).normalize();
 
   const eyeSeat = [1, -1].map((s) => onSkull(headMesh, eyeDir(s)));
 
   const mouthDir = (u: number): THREE.Vector3 => {
-    const yaw = u * 0.36;
+    const yaw = u * 0.43;
     // Corners lift: a plain arc reads as a frown at this scale, and the small
     // upcurve is most of what makes the face friendly.
-    const pitch = -0.36 + u * u * 0.17;
+    const pitch = -0.34 + u * u * 0.16;
     return new THREE.Vector3(
       Math.sin(yaw) * Math.cos(pitch),
       Math.sin(pitch),
@@ -612,17 +659,13 @@ export function buildSquirtle(): Creature {
 
   const MOUTH_N = 22;
   const mouthPts: THREE.Vector3[] = [];
-  const lipPts: THREE.Vector3[] = [];
   for (let i = 0; i <= MOUTH_N; i++) {
     const u = (i / MOUTH_N) * 2 - 1;
     const d = mouthDir(u).normalize();
     const hit = onSkull(headMesh, d);
-    // Stand the line proud of the skin so nothing can bury it.
-    mouthPts.push(hit.clone().addScaledVector(d, 0.0045));
-    const ld = mouthDir(u * 0.94).normalize();
-    ld.y -= 0.13;
-    ld.normalize();
-    lipPts.push(onSkull(headMesh, ld).addScaledVector(ld, 0.0035));
+    // Stand the line just proud of the skin so nothing can bury it, but low
+    // enough that it cannot float off the profile in side view.
+    mouthPts.push(hit.clone().addScaledVector(d, 0.0022));
   }
 
   finishBody(headMesh, new THREE.Vector3(0, 0, 0), 0.26);
@@ -648,8 +691,18 @@ export function buildSquirtle(): Creature {
   // across with a full white sclera, a big warm-brown iris, a black pupil and
   // one strong catchlight, seated into carved sockets so they read as set into
   // the skull rather than glued on.
-  const scleraMat = new THREE.MeshStandardMaterial({ color: 0xf6f2ec, roughness: 0.44, metalness: 0 });
-  const irisMat = new THREE.MeshStandardMaterial({ color: 0x6d3617, roughness: 0.48, metalness: 0 });
+  const scleraMat = new THREE.MeshStandardMaterial({ color: 0xf8f5ef, roughness: 0.38, metalness: 0 });
+  // Maroon red, matching the HOME render's iris. Brightened again and given a
+  // touch of emissive lift: under scene lighting 0x7c241c shaded down to
+  // near-black over most of the ball, so the eye read as a red RING around a
+  // huge black pupil — a glare. The emissive floor keeps the lower half of
+  // the iris reading maroon instead of collapsing into the pupil.
+  const irisMat = new THREE.MeshStandardMaterial({
+    color: 0x8e2c1f,
+    emissive: 0x220a07,
+    roughness: 0.32,
+    metalness: 0,
+  });
   const pupilMat = new THREE.MeshBasicMaterial({ color: 0x0d0a0b });
   const glintMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
@@ -658,39 +711,63 @@ export function buildSquirtle(): Creature {
     const seat = eyeSeat[s > 0 ? 0 : 1];
 
     const holder = new THREE.Group();
-    // SUNK: the ball's centre sits 0.62 radii behind the socket floor, so what
-    // clears the skin is a shallow spherical cap. The previous 0.46 left better
-    // than half the sphere standing out of the head.
-    holder.position.copy(seat.clone().addScaledVector(d, -EYE_R * 0.62));
+    // The ball's centre sits just over half a radius behind the socket floor:
+    // deep enough to read as set into the skull, proud enough that the big
+    // aperture stays fully open.
+    holder.position.copy(seat.clone().addScaledVector(d, -EYE_R * 0.68));
     holder.rotation.y = s * SPLAY;
+    // Roll the WHOLE eye (ball + lid together) so the outer corner sits a
+    // touch higher than the inner one — the wide-awake cat-eye lift. Rolling
+    // only the lid aperture instead made its rim disagree with the iris and
+    // chip a skin-coloured bite out of the iris's inner-top corner.
+    holder.rotation.z = s * 0.055;
     holder.scale.y = SQUASH;
     rig.head.add(holder);
 
     const eye = new THREE.Group();
     eye.name = 'Eye';
+    // The iris cap looks slightly UP into the aperture. Without this the cap
+    // faces dead level, white shows above the iris, and the character reads
+    // as gazing at the floor half-asleep.
+    eye.rotation.x = -0.24;
     holder.add(eye);
 
-    const sclera = new THREE.Mesh(new THREE.SphereGeometry(EYE_R, 20, 14), scleraMat);
+    const sclera = new THREE.Mesh(new THREE.SphereGeometry(EYE_R, 22, 15), scleraMat);
     eye.add(sclera);
 
     // Iris and pupil are shallow caps on the eyeball so they curve with it.
+    // The iris is HUGE — it owns nearly the whole aperture, leaving white only
+    // at the corners, which is exactly how the reference eye reads.
     const iris = new THREE.Mesh(
-      new THREE.SphereGeometry(EYE_R * 1.006, 22, 14, 0, Math.PI * 2, 0, Math.asin(0.60)),
+      new THREE.SphereGeometry(EYE_R * 1.006, 24, 16, 0, Math.PI * 2, 0, Math.asin(0.93)),
       irisMat,
     );
     iris.rotation.x = Math.PI / 2;
     eye.add(iris);
 
+    // The pupil is CLEARLY smaller than the iris — ~37% of the visible eye
+    // width, centred. Any bigger and the black owns the aperture, the iris
+    // survives only as a thin red rim, and the eye turns into a donut glare.
+    // The HOME balance is a big maroon disc with a modest black centre.
     const pupil = new THREE.Mesh(
-      new THREE.SphereGeometry(EYE_R * 1.014, 18, 12, 0, Math.PI * 2, 0, Math.asin(0.60 * 0.56)),
+      new THREE.SphereGeometry(EYE_R * 1.014, 20, 13, 0, Math.PI * 2, 0, Math.asin(0.285)),
       pupilMat,
     );
     pupil.rotation.x = Math.PI / 2;
     eye.add(pupil);
 
-    // One catchlight, at ten o'clock, small and crisp.
-    const glint = new THREE.Mesh(new THREE.SphereGeometry(EYE_R * 0.15, 10, 8), glintMat);
-    glint.position.set(-EYE_R * 0.32, EYE_R * 0.38, EYE_R * 0.90);
+    // ONE small crisp catchlight, upper-outer. A flattened disc oriented along
+    // its own surface normal so it reads as a round dot from the front — the
+    // previous half-buried sphere intersected the curved pupil at a grazing
+    // angle and smeared into a white streak across the top of the eye.
+    // Pulled DOWN off the aperture's top rim: at the old height the lid edge
+    // clipped it into a white smear along the top of the eye. Sitting clear of
+    // the rim it reads as the round glossy dot that carries the friendly look.
+    const glintDir = new THREE.Vector3(s * 0.34, 0.42, 0.85).normalize();
+    const glint = new THREE.Mesh(new THREE.SphereGeometry(EYE_R * 0.155, 12, 8), glintMat);
+    glint.scale.z = 0.45;
+    glint.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), glintDir);
+    glint.position.copy(glintDir).multiplyScalar(EYE_R * 1.02);
     eye.add(glint);
 
     eye.traverse((o) => {
@@ -699,15 +776,29 @@ export function buildSquirtle(): Creature {
     });
 
     // Lid shell: skin-coloured, closed all round the eyeball with an eye-shaped
-    // aperture so no sclera escapes at the sides. Painted at FULL skin value —
-    // the previous 0.80 / 0.58 pair drew a dark ring that read as a scowl.
-    const lid = new THREE.Mesh(paint(eyeAperture(EYE_R * 1.04, 1.05, 0.98, 0.14), 1.0), skin);
+    // aperture so no sclera escapes at the sides. The aperture is WIDE OPEN
+    // and taller than it is wide, with zero droop. The shell hugs the eyeball
+    // TIGHTLY — at the old 1.04 radius there was a visible gap between lid
+    // edge and eye, and looking under the top edge showed the shell's dark
+    // backside as an angular chip on the iris.
+    // Negative drop tilts the aperture UP so its rim follows the up-tilted
+    // iris; with a level aperture the lid clipped a dark bite out of the
+    // iris's inner-top corner.
+    // Opened wider and rounder than before — wide-awake eyes — and the whole
+    // aperture is rolled a few degrees so the OUTER corner sits slightly
+    // higher than the inner one. Nothing about the lid presses down on the
+    // iris top: a level or drooping upper rim is exactly what created the
+    // glare in the last pass.
+    // Width capped at 0.90: at 0.94 the two apertures reached across the nose
+    // bridge, the inner corners almost touched, and the folds pinched a dark
+    // vertical crease between the eyes — an instant knitted-brow scowl.
+    const lid = new THREE.Mesh(paint(eyeAperture(EYE_R * 1.022, 0.90, 1.12, -0.145), 1.0), skin);
     lid.castShadow = false;
     holder.add(lid);
 
     // A soft fold just outboard of it: barely shaded, so the eye's edge is a
     // crease in skin rather than eyeliner.
-    const fold = new THREE.Mesh(paint(eyeAperture(EYE_R * 1.14, 1.19, 1.10, 0.14), 0.94), skin);
+    const fold = new THREE.Mesh(paint(eyeAperture(EYE_R * 1.13, 1.02, 1.30, -0.07), 0.96), skin);
     fold.castShadow = false;
     holder.add(fold);
 
@@ -725,25 +816,59 @@ export function buildSquirtle(): Creature {
   }
 
   /* ---- Mouth and nose ----------------------------------------------- */
-  const mouthGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(mouthPts), 24, 0.0052, 6, false);
+  // THIN. The mouth is a wide simple smile line, not a lip — the previous
+  // 5 mm tube read as a clown grin.
+  const mouthGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(mouthPts), 24, 0.0026, 6, false);
   mouthGeo.deleteAttribute('uv');
   const mouth = new THREE.Mesh(paint(mouthGeo, 1), mouthMat);
   mouth.castShadow = false;
   rig.head.add(mouth);
 
-  // A pale lower lip just under the line, so the mouth has a real edge rather
-  // than a wire lying on the surface.
-  const lipGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(lipPts), 22, 0.0042, 6, false);
-  lipGeo.deleteAttribute('uv');
-  const lip = new THREE.Mesh(paint(lipGeo, 1.16), skin);
-  lip.castShadow = false;
-  rig.head.add(lip);
+  // Brow marks: HOME carries only the faintest short line above each eye —
+  // barely-there, nearly horizontal. The previous bold near-black dashes,
+  // slanted hard down toward the nose, were villain brows and single-handedly
+  // made the face read ANGRY. These are much thinner, shorter, almost flat,
+  // and tinted a dark blue-grey close to the skin so they read as a soft
+  // crease rather than drawn-on eyebrows. Friendly beats faithful here.
+  const browMat = new THREE.MeshStandardMaterial({
+    color: 0x2b5e85,
+    roughness: 0.85,
+    vertexColors: true,
+  });
+  for (const s of [1, -1]) {
+    const browEnd = (yaw: number, pitch: number): THREE.Vector3 => {
+      const d = new THREE.Vector3(
+        Math.sin(yaw) * Math.cos(pitch),
+        Math.sin(pitch),
+        Math.cos(yaw) * Math.cos(pitch),
+      ).normalize();
+      // Stood WELL clear of the skin: the soft fold shell around the eye
+      // protrudes above the skull surface here, and a brow that grazes it gets
+      // partially buried and breaks into dark wedges on the eye's top rim.
+      return onSkull(headMesh, d).addScaledVector(d, 0.0042);
+    };
+    // Nearly flat: only a whisper of tilt (outer end a touch higher), and a
+    // shorter span than before so it never reads as a full drawn brow.
+    const inner = browEnd(s * (SPLAY + 0.012), 0.578);
+    const outer = browEnd(s * (SPLAY + 0.098), 0.590);
+    const len = inner.distanceTo(outer);
+    const browGeo = new THREE.CapsuleGeometry(0.0007, len, 3, 8);
+    browGeo.deleteAttribute('uv');
+    const brow = new THREE.Mesh(paint(browGeo, 1), browMat);
+    brow.position.copy(inner).add(outer).multiplyScalar(0.5);
+    brow.quaternion.setFromUnitVectors(UP, outer.clone().sub(inner).normalize());
+    brow.castShadow = false;
+    rig.head.add(brow);
+  }
 
+  // Nostrils: two TINY dark dots. In the HOME render they are barely there —
+  // the previous 5.5 mm grey-blue ovals were the third most prominent feature
+  // on the face.
   for (const s of [1, -1]) {
     const nd = new THREE.Vector3(s * 0.115, -0.055, 1).normalize();
-    const n = new THREE.Mesh(paint(new THREE.SphereGeometry(0.0042, 10, 8), 1), darkMat);
-    n.scale.set(1.3, 0.85, 0.6);
-    n.position.copy(onSkull(headMesh, nd).addScaledVector(nd, 0.001));
+    const n = new THREE.Mesh(paint(new THREE.SphereGeometry(0.0026, 10, 8), 1), darkMat);
+    n.scale.set(1.2, 0.75, 0.5);
+    n.position.copy(onSkull(headMesh, nd).addScaledVector(nd, 0.0008));
     n.castShadow = false;
     rig.head.add(n);
   }
@@ -768,21 +893,21 @@ export function buildSquirtle(): Creature {
     { x: 0.036, y: -0.064, z: 0.006, r: 0.031 },
     { x: 0.044, y: -0.086, z: 0.016, r: 0.036, sz: 0.94 },
     { x: 0.046, y: -0.112, z: 0.036, r: 0.031 },
-    { x: 0.046, y: -0.132, z: 0.058, r: 0.041, sy: 0.82, sz: 1.06 },
+    { x: 0.048, y: -0.136, z: 0.062, r: 0.046, sy: 0.82, sz: 1.06 },
   ], 0.80);
-  const palm = new THREE.Vector3(0.046, -0.132, 0.058).multiplyScalar(0.80);
-  const fingerGeo = digit(0.030, 0.0140, 0.56);
+  const palm = new THREE.Vector3(0.048, -0.136, 0.062).multiplyScalar(0.80);
+  const fingerGeo = digit(0.036, 0.0155, 0.56);
   paint(fingerGeo, 1.02);
-  const fingerClaw = paint(new THREE.ConeGeometry(0.0090, 0.024, 8), 1);
+  const fingerClaw = paint(new THREE.ConeGeometry(0.0095, 0.026, 8), 1);
 
   const arms: THREE.Group[] = [];
   for (const s of [1, -1]) {
     const g = new THREE.Group();
-    g.position.set(s * 0.148, 0.264, 0.002);
-    g.rotation.z = s * -0.10;
+    g.position.set(s * 0.126, 0.252, 0.004);
+    g.rotation.z = s * -0.20;
     const balls = s > 0 ? armBalls : mirror(armBalls);
     const m = finishBody(
-      new THREE.Mesh(metaSurface(balls, { resolution: 34, smooth: 0.80 }), skin),
+      new THREE.Mesh(metaSurface(balls, { resolution: 46, smooth: 0.80 }), skin),
       new THREE.Vector3(s * 0.035, -0.06, 0.018),
       0.28,
     );
@@ -795,12 +920,12 @@ export function buildSquirtle(): Creature {
       root.addScaledVector(dir, 0.014);
 
       const f = new THREE.Mesh(fingerGeo, skin);
-      placeAlong(f, root, dir, 0.031);
+      placeAlong(f, root, dir, 0.037);
       f.castShadow = true;
       g.add(f);
 
       const cl = new THREE.Mesh(fingerClaw, clawMat);
-      placeAlong(cl, root.clone().addScaledVector(dir, 0.029), dir, 0.021);
+      placeAlong(cl, root.clone().addScaledVector(dir, 0.035), dir, 0.023);
       cl.castShadow = true;
       g.add(cl);
     }
@@ -810,12 +935,13 @@ export function buildSquirtle(): Creature {
   }
 
   /* ---- Legs and feet ------------------------------------------------ */
+  // Chunky: the thigh has to bulge visibly below the shell's rim.
   const legBalls: Ball[] = scaleBalls([
-    { x: -0.006, y: 0.012, z: -0.002, r: 0.050 },
-    { x: 0.004, y: -0.026, z: 0.004, r: 0.045 },
-    { x: 0.007, y: -0.048, z: 0.012, r: 0.036 },
-    { x: 0.009, y: -0.066, z: 0.026, r: 0.040 },
-    { x: 0.010, y: -0.080, z: 0.054, r: 0.039, sy: 0.56, sz: 1.24 },
+    { x: -0.004, y: 0.012, z: 0.002, r: 0.052 },
+    { x: 0.004, y: -0.026, z: 0.004, r: 0.049 },
+    { x: 0.007, y: -0.048, z: 0.012, r: 0.039 },
+    { x: 0.009, y: -0.066, z: 0.026, r: 0.042 },
+    { x: 0.010, y: -0.080, z: 0.054, r: 0.041, sy: 0.56, sz: 1.24 },
   ], 0.80);
   const pad = new THREE.Vector3(0.010, -0.080, 0.054).multiplyScalar(0.80);
   const toeGeo = digit(0.026, 0.0155, 0.62);
@@ -824,11 +950,11 @@ export function buildSquirtle(): Creature {
 
   for (const s of [1, -1]) {
     const g = new THREE.Group();
-    g.position.set(s * 0.086, 0.091, 0.010);
+    g.position.set(s * 0.078, 0.092, 0.020);
     g.rotation.y = s * 0.14;
     const balls = s > 0 ? legBalls : mirror(legBalls);
     const m = finishBody(
-      new THREE.Mesh(metaSurface(balls, { resolution: 34, smooth: 0.86 }), skin),
+      new THREE.Mesh(metaSurface(balls, { resolution: 46, smooth: 0.86 }), skin),
       new THREE.Vector3(0, -0.045, 0.018),
       0.28,
     );
@@ -867,9 +993,9 @@ export function buildSquirtle(): Creature {
   // invisible from every angle but the pure side. The base now sits at the
   // side-rear socket and the spiral swings outboard past the shell's own
   // silhouette, so it reads in three-quarter and peeks out in front.
-  tail.position.set(0.150, 0.194, -0.104);
+  tail.position.set(0.082, 0.190, -0.122);
   tail.rotation.x = -0.10;
-  tail.rotation.y = 0.86;
+  tail.rotation.y = 0.70;
   tail.rotation.z = -0.40;
   rig.body.add(tail);
   rig.tail = tail;
@@ -878,28 +1004,41 @@ export function buildSquirtle(): Creature {
   const base = new THREE.Vector3();
   for (let i = 0; i <= 26; i++) {
     const t = i / 26;
-    const a = 2.30 + t * Math.PI * 2.15;
-    const R = 0.086 * (1 - 0.68 * t);
-    const p = new THREE.Vector3(t * 0.030, 0.040 + R * Math.cos(a), -0.026 + R * Math.sin(a));
+    const a = 2.30 + t * Math.PI * 1.80;
+    const R = 0.088 * (1 - 0.62 * t);
+    const p = new THREE.Vector3(t * 0.034, 0.042 + R * Math.cos(a), -0.026 + R * Math.sin(a));
     if (i === 0) base.copy(p);
     curlPts.push(p.sub(base));
   }
   const curl = new THREE.CatmullRomCurve3(curlPts);
-  const tailGeo = new THREE.TubeGeometry(curl, 30, 0.042, 10, false);
-  taperTube(tailGeo, curl, 31, 11, 1.0, 0.14, (t) => t * t * (3 - 2 * t));
+  // TubeGeometry places its rings at ARC-LENGTH-uniform points
+  // (curve.getPointAt), but taperTube recentres each ring with plain
+  // curve.getPoint. On a spiral, where parameter speed varies along the
+  // curve, the two disagree — every ring is scaled toward a point that is not
+  // its centre, which squashed the tube into the flat ribbon the old tail
+  // showed on its inner curl. Wrapping the curve so getPoint IS getPointAt
+  // makes the centres line up exactly.
+  class ArcLengthCurve extends THREE.Curve<THREE.Vector3> {
+    constructor(private readonly inner: THREE.CatmullRomCurve3) { super(); }
+    override getPoint(t: number): THREE.Vector3 { return this.inner.getPointAt(t); }
+  }
+  // THICK: the tail is a signature element and has to read as a chunky spiral,
+  // not a wire.
+  const tailGeo = new THREE.TubeGeometry(curl, 30, 0.064, 12, false);
+  taperTube(tailGeo, new ArcLengthCurve(curl), 31, 13, 1.0, 0.45, (t) => t * t * (3 - 2 * t));
   tailGeo.deleteAttribute('uv');
-  const tailMesh = finishBody(new THREE.Mesh(tailGeo, skin), new THREE.Vector3(0, 0.03, -0.03), 0.22);
+  const tailMesh = finishBody(new THREE.Mesh(tailGeo, skin), new THREE.Vector3(0, 0.03, -0.03), 0.24);
   tail.add(tailMesh);
 
   // TubeGeometry is open at both ends. The root end sits at the shell's tail
   // socket, and an open tube there shows as a hollow ring from behind, so it
   // gets a cap that also reads as the fleshy base of the tail.
-  const tailCap = new THREE.Mesh(paint(new THREE.SphereGeometry(0.046, 14, 10), 0.96), skin);
+  const tailCap = new THREE.Mesh(paint(new THREE.SphereGeometry(0.040, 14, 10), 0.98), skin);
   tailCap.position
     .copy(tail.position)
     .addScaledVector(
-      new THREE.Vector3(0, 0.232, -0.016).sub(tail.position).normalize(),
-      0.024,
+      new THREE.Vector3(0, 0.224, -0.014).sub(tail.position).normalize(),
+      0.040,
     );
   tailCap.scale.set(1.0, 0.94, 1.0);
   tailCap.castShadow = true;
@@ -921,8 +1060,8 @@ export function buildSquirtle(): Creature {
     },
     update(dt, elapsed) {
       anim.update(dt, elapsed, attention);
-      tail.rotation.y = 0.86 + Math.sin(elapsed * 0.9 + 1.2) * (0.08 + attention * 0.10);
-      tail.rotation.x = -0.16 + Math.sin(elapsed * 1.3) * 0.04;
+      tail.rotation.y = 0.70 + Math.sin(elapsed * 0.9 + 1.2) * (0.08 + attention * 0.10);
+      tail.rotation.x = -0.10 + Math.sin(elapsed * 1.3) * 0.04;
       for (let i = 0; i < arms.length; i++) {
         const s = i === 0 ? 1 : -1;
         arms[i].rotation.z = s * (Math.sin(elapsed * 1.05 + i * 1.9) * 0.07 - 0.05);
