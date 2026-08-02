@@ -1,0 +1,296 @@
+/*
+ * battle.css — the battle interface layer.
+ *
+ * Same language as ui.css: cream panels, navy ink, one radius scale, the
+ * spring easing. Everything chunky enough to read at 1600x900 from the sofa.
+ */
+
+.pt-battle {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 280ms var(--pt-ease), visibility 0s linear 300ms;
+}
+
+.pt-battle.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 240ms var(--pt-ease), visibility 0s linear 0s;
+}
+
+/* While a battle owns the screen the exploration chrome yields. */
+.pt-ui.in-battle .pt-crosshair,
+.pt-ui.in-battle .pt-prompt,
+.pt-ui.in-battle .pt-hint {
+  opacity: 0 !important;
+  visibility: hidden;
+}
+
+/* --------------------------------------------------------------- plates */
+
+.pt-plate {
+  position: absolute;
+  width: min(360px, 30vw);
+  padding: 12px 18px 14px;
+  border-radius: var(--pt-r-lg);
+  background: linear-gradient(180deg, var(--pt-cream) 0%, var(--pt-cream-2) 100%);
+  box-shadow: var(--pt-shadow-lift), inset 0 2px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -3px 0 rgba(31, 48, 80, 0.08);
+  transform: translateY(0);
+  transition: transform 460ms var(--pt-spring), opacity 260ms var(--pt-ease);
+}
+
+.pt-plate--foe {
+  top: clamp(18px, 3.2vh, 34px);
+  left: clamp(18px, 2.4vw, 40px);
+}
+
+.pt-plate--ally {
+  right: clamp(18px, 2.4vw, 40px);
+  bottom: clamp(150px, 24vh, 240px);
+}
+
+.pt-battle:not(.is-on) .pt-plate--foe { transform: translateY(-16px); }
+.pt-battle:not(.is-on) .pt-plate--ally { transform: translateY(16px); }
+
+.pt-plate__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pt-plate__name {
+  font-size: clamp(16px, 1.35vw, 22px);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--pt-ink);
+}
+
+.pt-plate__lv {
+  font-size: clamp(13px, 1vw, 16px);
+  font-weight: 800;
+  color: var(--pt-ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.pt-hpbar {
+  position: relative;
+  margin-top: 9px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(31, 48, 80, 0.16);
+  box-shadow: inset 0 2px 4px rgba(15, 24, 42, 0.25), inset 0 0 0 1.5px rgba(31, 48, 80, 0.12);
+  overflow: hidden;
+}
+
+.pt-hpbar__label {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 8.5px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: rgba(31, 48, 80, 0.55);
+  z-index: 1;
+}
+
+.pt-hpbar__fill {
+  position: absolute;
+  inset: 2px;
+  border-radius: 999px;
+  transform-origin: left center;
+  background: linear-gradient(180deg, #7fe07a 0%, #48bf53 60%, #33a648 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  /* Width driven per-frame from JS so drains ease and screenshots catch
+     mid-drain frames deterministically. */
+}
+
+.pt-hpbar__fill.is-warn {
+  background: linear-gradient(180deg, #ffd968 0%, #f2b83a 60%, #dd9f24 100%);
+}
+
+.pt-hpbar__fill.is-danger {
+  background: linear-gradient(180deg, #ff9070 0%, #e05a41 60%, #c74630 100%);
+}
+
+.pt-plate__hpnum {
+  margin-top: 7px;
+  text-align: right;
+  font-size: clamp(13px, 1.02vw, 16px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--pt-ink-soft);
+}
+
+/* -------------------------------------------------------------- message */
+
+.pt-bmsg {
+  position: absolute;
+  left: clamp(18px, 2.4vw, 40px);
+  bottom: clamp(22px, 4vh, 48px);
+  width: min(760px, 54vw);
+  min-height: clamp(88px, 12.5vh, 128px);
+  padding: clamp(16px, 2vh, 24px) clamp(22px, 2.2vw, 34px);
+  border-radius: var(--pt-r-xl);
+  background: linear-gradient(180deg, var(--pt-cream) 0%, var(--pt-cream-2) 100%);
+  box-shadow: var(--pt-shadow-lift), inset 0 2px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -3px 0 rgba(31, 48, 80, 0.08), inset 0 0 0 3px rgba(255, 255, 255, 0.4);
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 220ms var(--pt-ease), transform 400ms var(--pt-spring);
+}
+
+.pt-bmsg.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.pt-bmsg__text {
+  margin: 0;
+  font-size: clamp(17px, 1.45vw, 24px);
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--pt-ink);
+  min-height: 2.9em;
+  white-space: pre-wrap;
+}
+
+/* -------------------------------------------------------------- actions */
+
+.pt-bactions {
+  position: absolute;
+  right: clamp(18px, 2.4vw, 40px);
+  bottom: clamp(22px, 4vh, 48px);
+  width: min(380px, 31vw);
+  pointer-events: auto;
+  opacity: 0;
+  transform: translateY(14px) scale(0.98);
+  transition: opacity 200ms var(--pt-ease), transform 380ms var(--pt-spring);
+}
+
+.pt-bactions.is-on {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.pt-bactions__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.pt-bactions__grid.is-moves {
+  grid-template-columns: 1fr 1fr;
+}
+
+.pt-bbtn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px 18px;
+  border: 0;
+  border-radius: var(--pt-r-md);
+  font-family: inherit;
+  text-align: left;
+  background: linear-gradient(180deg, var(--pt-cream) 0%, var(--pt-cream-2) 100%);
+  box-shadow: var(--pt-shadow-soft), inset 0 2px 0 rgba(255, 255, 255, 0.85),
+    inset 0 0 0 2.5px rgba(31, 48, 80, 0.1);
+  color: var(--pt-ink);
+  cursor: pointer;
+  transition: transform 200ms var(--pt-spring), box-shadow 200ms var(--pt-ease);
+}
+
+.pt-bbtn__label {
+  font-size: clamp(16px, 1.3vw, 21px);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pt-bbtn__sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: clamp(11px, 0.85vw, 13px);
+  font-weight: 800;
+  color: var(--pt-ink-faint);
+  letter-spacing: 0.06em;
+}
+
+.pt-bbtn:hover,
+.pt-bbtn.is-sel {
+  transform: translateY(-3px) scale(1.03);
+  box-shadow: 0 4px 0 rgba(31, 48, 80, 0.18), 0 14px 28px rgba(20, 32, 54, 0.3),
+    inset 0 2px 0 rgba(255, 255, 255, 0.85), inset 0 0 0 3px var(--pt-gold);
+}
+
+.pt-bbtn.is-sel::before {
+  content: "▶";
+  position: absolute;
+  left: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  color: var(--pt-gold);
+  text-shadow: 0 1px 3px rgba(15, 24, 42, 0.6);
+}
+
+.pt-bbtn--fight {
+  background: linear-gradient(180deg, #e77b60 0%, var(--pt-red) 60%, #b04432 100%);
+}
+.pt-bbtn--fight .pt-bbtn__label { color: var(--pt-cream); text-shadow: 0 1px 0 rgba(31,48,80,0.3); }
+.pt-bbtn--fight .pt-bbtn__sub { color: rgba(250, 243, 228, 0.8); }
+
+.pt-bbtn--run {
+  background: linear-gradient(180deg, #5d99d4 0%, var(--pt-blue) 60%, var(--pt-blue-deep) 100%);
+}
+.pt-bbtn--run .pt-bbtn__label { color: var(--pt-cream); text-shadow: 0 1px 0 rgba(31,48,80,0.3); }
+.pt-bbtn--run .pt-bbtn__sub { color: rgba(250, 243, 228, 0.8); }
+
+.pt-bbtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}
+
+/* Type chips on move buttons. */
+.pt-chip {
+  display: inline-grid;
+  place-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--pt-cream);
+  background: var(--pt-ink-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.pt-chip--normal { background: #8a8a76; }
+.pt-chip--fire { background: #e2823a; }
+.pt-chip--water { background: #4a86c4; }
+.pt-chip--grass { background: #58a04e; }
+.pt-chip--flying { background: #8fa8dd; }
+.pt-chip--poison { background: #9a5a9e; }
+.pt-chip--ground { background: #c9a25a; }
+
+/* Back hint under the move grid. */
+.pt-bactions__hint {
+  margin-top: 10px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(250, 243, 228, 0.85);
+  text-shadow: 0 1px 4px rgba(15, 24, 42, 0.8);
+}

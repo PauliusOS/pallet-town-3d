@@ -11,6 +11,8 @@ import { buildBuildings } from './Buildings';
 import { buildVegetation } from './Vegetation';
 import { buildProps } from './Props';
 import { buildLabInterior } from './LabInterior';
+import { buildWildGrass } from './WildGrass';
+import { buildBattleArena } from '../gameplay/battle/BattleScene';
 
 /**
  * World — orchestrates the build order for Pallet Town.
@@ -73,6 +75,8 @@ export class World {
       ['Planting', buildVegetation],
       ["Setting out props", buildProps],
       ["Furnishing Oak's lab", buildLabInterior],
+      ['Wild grass', buildWildGrass],
+      ['Battle arena', buildBattleArena],
     ];
 
     // Per-step timings. Load time is on the player's critical path and every

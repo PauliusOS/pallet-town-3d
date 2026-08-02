@@ -19,6 +19,7 @@ import {
   bakeCanopyShading,
 } from '../fx/FoliageMaterials';
 import { TERRAIN } from './Terrain';
+import { wildGrassClearance } from './WildGrass';
 
 /**
  * Vegetation — every plant in Pallet Town.
@@ -1890,7 +1891,8 @@ export function buildVegetation(ctx: GameContext): void {
     d *= outsideBuildings(x, z, 1.4);
     // Clumping: copses and clearings.
     const c = fbm2(clump, x * 0.09, z * 0.09, 3) * 0.5 + 0.5;
-    return clamp(d * (0.35 + c * 0.95), 0, 1) * 0.92;
+    // The wild-grass lobes are a deliberate clearing: no trunks in them.
+    return clamp(d * (0.35 + c * 0.95), 0, 1) * 0.92 * wildGrassClearance(x, z, 1.6);
   };
 
   /**
@@ -1979,6 +1981,8 @@ export function buildVegetation(ctx: GameContext): void {
 
   for (const [x, z, idx] of HERO_TREES) {
     if (mask.at(x, z) < 0.4) continue;
+    // Two of the authored trees predate the wild-grass clearing on the shelf.
+    if (wildGrassClearance(x, z) < 0.5) continue;
     placeTree(x, z, idx);
   }
 
@@ -2157,7 +2161,7 @@ export function buildVegetation(ctx: GameContext): void {
     const scatter =
       smoothstep(0.34, 0.62, fbm2(clump, x * 0.075 + 9, z * 0.075, 3) * 0.5 + 0.5) * 0.3;
     const d = clamp(Math.max(Math.max(nearWood, nearSouth) * 0.42, corner * 0.7) + scatter * 0.4, 0, 1);
-    return d * outsideBuildings(x, z, 0.25);
+    return d * outsideBuildings(x, z, 0.25) * wildGrassClearance(x, z);
   };
 
   const bushSpots = poisson(rng, {
@@ -2280,7 +2284,7 @@ export function buildVegetation(ctx: GameContext): void {
         // establishing shot, where there is nothing overhead to shed it.
         const wood = Math.max(smoothstep(11.0, 17.0, Math.abs(x)), smoothstep(19.0, 25.0, z));
         const n = fbm2(clump, x * 0.19 + 61, z * 0.19, 3) * 0.5 + 0.5;
-        return clamp(wood * (0.2 + n * 0.8), 0, 1) * outsideBuildings(x, z, 0.2);
+        return clamp(wood * (0.2 + n * 0.8), 0, 1) * outsideBuildings(x, z, 0.2) * wildGrassClearance(x, z);
       },
     })) {
       litSpots.push({ x: s.x, z: s.z, v: lRng() < 0.5 ? 0 : 1 });
@@ -2337,7 +2341,7 @@ export function buildVegetation(ctx: GameContext): void {
         if (mask.at(x, z) < 0.7) return 0;
         if (ground(x, z) < 0.3) return 0;
         const wood = Math.max(smoothstep(11.5, 17.5, Math.abs(x)), smoothstep(17.5, 23.5, z));
-        return clamp(wood * 0.8, 0, 1) * outsideBuildings(x, z, 0.8);
+        return clamp(wood * 0.8, 0, 1) * outsideBuildings(x, z, 0.8) * wildGrassClearance(x, z);
       },
     });
     const fallBuckets: { x: number; z: number }[][] = [[], []];

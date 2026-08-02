@@ -452,6 +452,23 @@ export class PostFX {
     // normal maps into visible firefly speckle. A higher threshold with a wider
     // soft knee keeps the glow for actual highlights and nothing else.
     this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.24, 0.85, 1.35);
+    // NaN guard on the bloom input. A single NaN/Inf fragment anywhere in the
+    // HDR buffer — a degenerate particle, a mid-animation zero-scale mesh —
+    // poisons the high-pass, then every downsampled mip, and the composite
+    // wipes the ENTIRE frame to black (observed repeatedly during battle FX
+    // bursts on the ANGLE/Metal path). Zeroing non-finite texels here confines
+    // the damage to the one source pixel instead of the whole image.
+    {
+      const hp = this.bloom.materialHighPassFilter as THREE.ShaderMaterial;
+      hp.fragmentShader = hp.fragmentShader.replace(
+        'vec4 texel = texture2D( tDiffuse, vUv );',
+        /* glsl */ `vec4 texel = texture2D( tDiffuse, vUv );
+        // NaN != NaN, so this selects exactly the poisoned channels.
+        texel = mix( texel, vec4( 0.0 ), vec4( notEqual( texel, texel ) ) );
+        texel = clamp( texel, vec4( 0.0 ), vec4( 5.0e3 ) );`,
+      );
+      hp.needsUpdate = true;
+    }
     this.composer.addPass(this.bloom);
 
     this.grade = new ShaderPass(GradeShader);

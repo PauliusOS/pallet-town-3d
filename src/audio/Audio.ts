@@ -83,9 +83,21 @@ const CHORDS: readonly (readonly number[])[] = [
   [36, 48, 55, 60, 62, 67], // Csus2   — leans back home
 ];
 
-const BPM = 68;
-const BEAT = 60 / BPM;
-const BAR = BEAT * 4;
+/**
+ * Battle progression — A minor, tense and driving. i / VI / iv / V7 so it
+ * pushes forward and resolves nowhere until the battle does.
+ */
+const BATTLE_CHORDS: readonly (readonly number[])[] = [
+  [45, 52, 57, 60, 64, 69], // Am    — the stance
+  [41, 48, 53, 57, 60, 65], // F     — weight
+  [38, 50, 53, 57, 62, 65], // Dm7   — coiling
+  [40, 47, 52, 56, 59, 64], // E7    — the lunge home
+];
+
+const FIELD_BPM = 68;
+const BATTLE_BPM = 132;
+
+export type AudioMode = 'field' | 'battle';
 
 export class AudioDirector {
   readonly name = 'audio';
@@ -117,6 +129,10 @@ export class AudioDirector {
   private lastFoot = -1;
   private lastUi = -1;
   private footToggle = 0;
+
+  // ---- mode ---------------------------------------------------------------
+  private mode: AudioMode = 'field';
+  private bpm = FIELD_BPM;
 
   // ---- smoothed mix state ------------------------------------------------
   private mixAccum = 0;
@@ -264,6 +280,21 @@ export class AudioDirector {
     ev.on('ui:confirm', () => this.confirm());
     ev.on('ui:tick', () => this.tick());
     ev.on('ui:chime', () => this.chime());
+    // Battle hooks.
+    ev.on('battle:start', () => this.setMode('battle'));
+    ev.on('battle:end', () => this.setMode('field'));
+    ev.on('battle:hit', (p) => this.battleHit((p as { eff?: number })?.eff ?? 1));
+    ev.on('battle:faint', () => this.faintTone());
+    ev.on('battle:victory', () => this.victoryJingle());
+  }
+
+  /** Switches the music engine between the field and battle scores. */
+  setMode(mode: AudioMode): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.bpm = mode === 'battle' ? BATTLE_BPM : FIELD_BPM;
+    this.barIndex = 0;
+    if (this.ac) this.nextBar = this.ac.currentTime + 0.15;
   }
 
   // =========================================================================
@@ -425,9 +456,10 @@ export class AudioDirector {
     }
 
     // --- music: schedule a bar at a time, a bar ahead.
-    while (this.nextBar < now + BAR) {
+    const bar = (60 / this.bpm) * 4;
+    while (this.nextBar < now + bar) {
       this.scheduleBar(ac, Math.max(this.nextBar, now + 0.05));
-      this.nextBar += BAR;
+      this.nextBar += bar;
       this.barIndex++;
     }
   }
@@ -501,9 +533,15 @@ export class AudioDirector {
    * exactly, because the arpeggio is re-rolled each time.
    */
   private scheduleBar(ac: AudioContext, t0: number): void {
+    if (this.mode === 'battle') {
+      this.scheduleBattleBar(ac, t0);
+      return;
+    }
     const rng = this.rng;
     const chord = CHORDS[this.barIndex % CHORDS.length];
     const send = this.verb;
+    const BEAT = 60 / this.bpm;
+    const BAR = BEAT * 4;
 
     // --- pad: the bottom three voices, slow in, slow out, slightly detuned.
     for (let i = 0; i < 3; i++) {
@@ -570,6 +608,145 @@ export class AudioDirector {
       tone(ac, this.musicBus, {
         t0: t0 + BEAT * 3, freq: mtof(b), gain: 0.038, attack: 0.05,
         decay: 1.8, type: 'sine', pan: -0.15, send, sendGain: 0.6,
+      });
+    }
+  }
+
+  /**
+   * One bar of battle music: a driving eighth-note bass, stabbed chord hits on
+   * the off-beats, and a fast top arpeggio. Same synthesis, different energy.
+   */
+  private scheduleBattleBar(ac: AudioContext, t0: number): void {
+    const rng = this.rng;
+    const chord = BATTLE_CHORDS[this.barIndex % BATTLE_CHORDS.length];
+    const send = this.verb;
+    const BEAT = 60 / this.bpm;
+
+    // --- bass: relentless eighths on the root, octave jumps at bar ends.
+    for (let s = 0; s < 8; s++) {
+      const oct = s >= 6 && rng.chance(0.5) ? 12 : 0;
+      tone(ac, this.musicBus, {
+        t0: t0 + s * (BEAT / 2),
+        freq: mtof(chord[0] + oct),
+        gain: 0.115 * (s % 2 === 0 ? 1 : 0.7),
+        attack: 0.006,
+        decay: 0.22,
+        type: 'triangle',
+        cutoff: 700,
+        send,
+        sendGain: 0.12,
+      });
+    }
+
+    // --- stabs: mid chord tones on beats 2 and 4, tight and dry.
+    for (const beat of [1, 3]) {
+      for (let i = 1; i < 4; i++) {
+        tone(ac, this.musicBus, {
+          t0: t0 + beat * BEAT + 0.004 * i,
+          freq: mtof(chord[i]),
+          gain: 0.055,
+          attack: 0.004,
+          decay: 0.16,
+          type: 'square',
+          cutoff: 1500,
+          pan: i === 1 ? -0.25 : i === 3 ? 0.25 : 0,
+          send,
+          sendGain: 0.18,
+        });
+      }
+    }
+
+    // --- top line: a fast climbing arpeggio, re-rolled per bar.
+    const upper = chord.slice(3);
+    let idx = rng.int(0, upper.length - 1);
+    for (let s = 0; s < 8; s++) {
+      if (rng.chance(0.22)) continue;
+      idx = (idx + (rng.chance(0.72) ? 1 : -1) + upper.length) % upper.length;
+      tone(ac, this.musicBus, {
+        t0: t0 + s * (BEAT / 2) + BEAT / 4,
+        freq: mtof(upper[idx] + 12),
+        gain: 0.038 * rng.range(0.75, 1.05),
+        attack: 0.008,
+        decay: 0.5,
+        type: 'triangle',
+        cutoff: 3200,
+        pan: rng.range(-0.3, 0.3),
+        send,
+        sendGain: 0.35,
+      });
+    }
+  }
+
+  // =========================================================================
+  // Battle SFX
+  // =========================================================================
+
+  /** Hit thump. `eff` scales it: weak taps, neutral thumps, super cracks. */
+  battleHit(eff: number): void {
+    const ac = this.ac;
+    if (!ac) return;
+    const t = ac.currentTime;
+    const strong = eff >= 2;
+    const weak = eff > 0 && eff < 1;
+    // Body: the low thud.
+    tone(ac, this.sfxBus, {
+      t0: t, freq: strong ? 62 : weak ? 120 : 84, gain: strong ? 0.4 : weak ? 0.18 : 0.3,
+      attack: 0.003, decay: strong ? 0.3 : 0.17, type: 'sine', cutoff: 320,
+    });
+    // Snap: a filtered noise crack on top.
+    noiseBurst(ac, this.sfxBus, this.noiseBright, {
+      t0: t, dur: strong ? 0.11 : 0.06, gain: strong ? 0.34 : weak ? 0.12 : 0.22,
+      freq: strong ? 2600 : 1700, type: 'bandpass', q: 1.4, attack: 0.001,
+      rate: strong ? 0.9 : 1.1,
+    });
+    if (strong) {
+      // A quick pitch-drop zap that reads as "super effective".
+      fmChirp(ac, this.sfxBus, {
+        t0: t + 0.02, f0: 900, f1: 240, dur: 0.16, gain: 0.16, index: 0.7, ratio: 1.99,
+        send: this.verb, sendGain: 0.25,
+      });
+    }
+  }
+
+  /** Faint: a sagging two-step descent, unmistakably "down". */
+  faintTone(): void {
+    const ac = this.ac;
+    if (!ac) return;
+    const t = ac.currentTime;
+    fmChirp(ac, this.sfxBus, {
+      t0: t, f0: 520, f1: 180, dur: 0.28, gain: 0.2, index: 0.35, ratio: 2.0,
+      send: this.verb, sendGain: 0.3,
+    });
+    fmChirp(ac, this.sfxBus, {
+      t0: t + 0.24, f0: 260, f1: 70, dur: 0.42, gain: 0.22, index: 0.3, ratio: 2.0,
+      send: this.verb, sendGain: 0.35,
+    });
+    tone(ac, this.sfxBus, {
+      t0: t + 0.3, freq: 58, gain: 0.16, attack: 0.01, decay: 0.5, type: 'sine', cutoff: 240,
+    });
+  }
+
+  /** Victory: a bright ascending fanfare riff on the chime voice. */
+  victoryJingle(): void {
+    const ac = this.ac;
+    if (!ac) return;
+    const t = ac.currentTime + 0.05;
+    const riff = [
+      { m: 69, dt: 0.0, g: 0.12 },
+      { m: 69, dt: 0.12, g: 0.1 },
+      { m: 69, dt: 0.24, g: 0.1 },
+      { m: 74, dt: 0.42, g: 0.13 },
+      { m: 78, dt: 0.6, g: 0.12 },
+      { m: 81, dt: 0.78, g: 0.15 },
+    ];
+    for (const n of riff) {
+      bell(ac, this.sfxBus, {
+        t0: t + n.dt,
+        freq: mtof(n.m),
+        gain: n.g,
+        decay: n.dt > 0.5 ? 1.9 : 0.7,
+        send: this.verb,
+        sendGain: 0.5,
       });
     }
   }

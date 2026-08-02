@@ -163,10 +163,15 @@ console.log(`> ${args.url}`);
 await page.goto(args.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
 // Wait for the game to publish its handle, or surface the boot error.
+// NOTE: options are waitForFunction's THIRD argument — passed second they land
+// in the `arg` slot and the default 30s timeout applies, which the ~40s world
+// build now exceeds.
 const ready = await page
-  .waitForFunction(() => window.__GAME__ !== undefined || document.querySelector('#app pre') !== null, {
-    timeout: 90000,
-  })
+  .waitForFunction(
+    () => window.__GAME__ !== undefined || document.querySelector('#app pre') !== null,
+    null,
+    { timeout: 150000 },
+  )
   .then(() => true)
   .catch(() => false);
 

@@ -4,6 +4,7 @@ import { EVENTS } from './core/Context';
 import { World } from './world/World';
 import { PlayerController } from './player/PlayerController';
 import { buildStarterSequence } from './gameplay/StarterSequence';
+import { BattleSystem } from './gameplay/battle/BattleSystem';
 import { HUD } from './ui/HUD';
 import { AudioDirector } from './audio/Audio';
 
@@ -27,8 +28,11 @@ async function boot(): Promise<void> {
 
   buildStarterSequence(world.ctx);
 
-  // Update order: input -> player -> world -> interaction -> hud.
+  const battle = new BattleSystem(world.ctx);
+
+  // Update order: input -> player -> battle (wins the camera) -> world -> hud.
   engine.add({ name: 'player-sys', update: (dt) => player.update(dt) });
+  engine.add(battle);
   engine.add({ name: 'world-sys', update: (dt, t) => world.update(dt, t) });
   engine.add({ name: 'hud-sys', update: (dt) => hud.update(dt) });
   engine.add({ name: 'audio-sys', update: (dt) => audio.update(dt) });
